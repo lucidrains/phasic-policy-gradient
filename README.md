@@ -1,6 +1,18 @@
-## Phasic Policy Gradient - Pytorch
+## Phasic Policy Gradient - Pytorch (wip)
 
 An implementation of Phasic Policy Gradient, a proposed improvement on top of Proximal Policy Optimization (PPO), in Pytorch. It will be my very first project in Reinforcement Learning.
+
+## Install
+
+```bash
+$ pip install -r requirements.txt
+```
+
+## Use
+
+```bash
+$ python train.py
+```
 
 ## Citations
 
