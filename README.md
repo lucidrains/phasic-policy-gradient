@@ -11,7 +11,7 @@ $ pip install -r requirements.txt
 ## Use
 
 ```bash
-$ python train.py
+$ python train.py --render
 ```
 
 ## Citations

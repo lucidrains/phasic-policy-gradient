@@ -19,6 +19,9 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 def exists(val):
     return val is not None
 
+def normalize(t, eps = 1e-5):
+    return (t - t.mean()) / (t.std() + eps)
+
 # networks
 
 class Actor(nn.Module):
@@ -68,8 +71,13 @@ class PPG:
         actor_hidden_dim,
         critic_hidden_dim,
         epochs,
+        epochs_aux,
         lr,
-        betas
+        betas,
+        gamma,
+        beta_s,
+        eps_clip,
+        value_clip
     ):
         self.actor = Actor(state_dim, actor_hidden_dim, num_actions).to(device)
         self.critic = Critic(state_dim, critic_hidden_dim).to(device)
@@ -77,8 +85,82 @@ class PPG:
         self.opt_critic = Adam(self.critic.parameters(), lr=lr, betas=betas)
 
         self.epochs = epochs
+        self.epochs_aux = epochs_aux
+
+        self.gamma = gamma
+        self.beta_s = beta_s
+        self.eps_clip = eps_clip
+        self.value_clip = value_clip
 
     def learn(self, memories):
+        rewards = []
+        discounted_reward = 0
+        for mem in reversed(memories.data):
+            reward, done = mem.reward, mem.done
+            discounted_reward = reward + (self.gamma * discounted_reward * (1 - float(done)))
+            rewards.insert(0, discounted_reward)
+
+        states = []
+        actions = []
+        old_log_probs = []
+
+        for mem in memories.data:
+            states.append(torch.from_numpy(mem.state))
+            actions.append(torch.tensor(mem.action))
+            old_log_probs.append(mem.action_log_prob)
+
+        to_torch_tensor = lambda t: torch.stack(t).to(device).detach()
+        states = to_torch_tensor(states)
+        actions = to_torch_tensor(actions)
+        old_log_probs = to_torch_tensor(old_log_probs)
+
+        rewards = torch.tensor(rewards).float().to(device)
+        rewards = normalize(rewards)
+
+        for _ in range(self.epochs):
+            action_probs, _ = self.actor(states)
+            values = self.critic(states)
+            dist = Categorical(action_probs)
+            action_log_probs = dist.log_prob(actions)
+            entropy = dist.entropy()
+
+            ratios = (action_log_probs - old_log_probs).exp()
+
+            advantages = rewards - values.detach()
+            surr1 = ratios * advantages
+            surr2 = ratios.clamp(1 - self.eps_clip, 1 + self.eps_clip) * advantages
+            policy_loss = - torch.min(surr1, surr2) - self.beta_s * entropy
+
+            value_loss = 0.5 * F.mse_loss(values.flatten(), rewards)
+
+            self.opt_actor.zero_grad()
+            policy_loss.mean().backward()
+            self.opt_actor.step()
+
+            self.opt_critic.zero_grad()
+            value_loss.mean().backward()
+            self.opt_critic.step()
+
+        old_action_probs, _ = self.actor(states)
+        old_action_logprobs = old_action_probs.log().detach_()
+
+        for _ in range(self.epochs_aux):
+            action_probs, policy_values = self.actor(states)
+            action_logprobs = action_probs.log()
+            aux_loss = 0.5 * F.mse_loss(policy_values.flatten(), rewards)
+            policy_loss = aux_loss + F.kl_div(action_logprobs, old_action_logprobs, log_target = True, reduction = 'batchmean')
+
+            self.opt_actor.zero_grad()
+            policy_loss.mean().backward()
+            self.opt_actor.step()
+
+            values = self.critic(states)
+            value_loss = 0.5 * F.mse_loss(values.flatten(), rewards)
+
+            self.opt_critic.zero_grad()
+            value_loss.mean().backward()
+            self.opt_critic.step()
+
         memories.clear()
 
 # replay buffer
@@ -93,6 +175,10 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.memories)
 
+    @property
+    def data(self):
+        return self.memories
+
     def clear(self):
         self.memories.clear()
 
@@ -105,17 +191,20 @@ class ReplayBuffer:
 
 def main(
     env_name = 'LunarLander-v2',
-    num_episodes = 100,
+    num_episodes = 50000,
     max_timesteps = 300,
-    actor_hidden_dim = 256,
-    critic_hidden_dim = 256,
-    max_memories = 300,
-    lr = 3e-4,
+    actor_hidden_dim = 64,
+    critic_hidden_dim = 64,
+    max_memories = 2000,
+    lr = 0.002,
     betas = (0.9, 0.999),
+    gamma = 0.99,
     eps_clip = 0.2,
     value_clip = 0.2,
+    beta_s = .01,
     update_timesteps = 2000,
     epochs = 4,
+    epochs_aux = 6,
     seed = None,
     render = False
 ):
@@ -124,22 +213,22 @@ def main(
     num_actions = env.action_space.n
 
     memories = ReplayBuffer(max_memories)
-    agent = PPG(state_dim, num_actions, actor_hidden_dim, critic_hidden_dim, epochs, lr, betas)
+    agent = PPG(state_dim, num_actions, actor_hidden_dim, critic_hidden_dim, epochs, epochs_aux, lr, betas, gamma, beta_s, eps_clip, value_clip)
 
     if exists(seed):
         torch.manual_seed(seed)
         np.random.seed(seed)
 
     time = 0
+    updated = False
 
     for eps in range(num_episodes):
         print(f'running episode {eps}')
         state = env.reset()
-
         for timestep in range(max_timesteps):
             time += 1
 
-            if render:
+            if updated and render:
                 env.render()
 
             state = torch.from_numpy(state).to(device)
@@ -154,10 +243,12 @@ def main(
             memory = Memory(state, action, action_log_prob, reward, done)
             memories.append(memory)
 
-            if timestep % update_timesteps == 0:
+            if time % update_timesteps == 0:
                 agent.learn(memories)
+                updated = True
 
             if done:
+                updated = False
                 break
 
         if render:
