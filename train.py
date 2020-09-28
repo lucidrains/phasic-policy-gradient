@@ -22,6 +22,11 @@ def exists(val):
 def normalize(t, eps = 1e-5):
     return (t - t.mean()) / (t.std() + eps)
 
+def update_network_(loss, optimizer):
+    optimizer.zero_grad()
+    loss.mean().backward()
+    optimizer.step()
+
 # networks
 
 class Actor(nn.Module):
@@ -133,13 +138,8 @@ class PPG:
 
             value_loss = 0.5 * F.mse_loss(values.flatten(), rewards)
 
-            self.opt_actor.zero_grad()
-            policy_loss.mean().backward()
-            self.opt_actor.step()
-
-            self.opt_critic.zero_grad()
-            value_loss.mean().backward()
-            self.opt_critic.step()
+            update_network_(policy_loss, self.opt_actor)
+            update_network_(value_loss, self.opt_critic)
 
         old_action_probs, _ = self.actor(states)
         old_action_logprobs = old_action_probs.log().detach_()
@@ -150,16 +150,12 @@ class PPG:
             aux_loss = 0.5 * F.mse_loss(policy_values.flatten(), rewards)
             policy_loss = aux_loss + F.kl_div(action_logprobs, old_action_logprobs, log_target = True, reduction = 'batchmean')
 
-            self.opt_actor.zero_grad()
-            policy_loss.mean().backward()
-            self.opt_actor.step()
+            update_network_(policy_loss, self.opt_actor)
 
             values = self.critic(states)
             value_loss = 0.5 * F.mse_loss(values.flatten(), rewards)
 
-            self.opt_critic.zero_grad()
-            value_loss.mean().backward()
-            self.opt_critic.step()
+            update_network_(value_loss, self.opt_critic)
 
         memories.clear()
 
@@ -191,8 +187,8 @@ class ReplayBuffer:
 
 def main(
     env_name = 'LunarLander-v2',
-    num_episodes = 50000,
-    max_timesteps = 300,
+    num_episodes = 100000,
+    max_timesteps = 400,
     actor_hidden_dim = 64,
     critic_hidden_dim = 64,
     max_memories = 2000,
@@ -203,10 +199,11 @@ def main(
     value_clip = 0.2,
     beta_s = .01,
     update_timesteps = 2000,
-    epochs = 4,
+    epochs = 1,
     epochs_aux = 6,
     seed = None,
-    render = False
+    render = False,
+    render_every_eps = 500
 ):
     env = gym.make(env_name)
     state_dim = env.observation_space.shape[0]
@@ -224,6 +221,7 @@ def main(
 
     for eps in range(num_episodes):
         print(f'running episode {eps}')
+        render = eps % render_every_eps == 0
         state = env.reset()
         for timestep in range(max_timesteps):
             time += 1
@@ -248,7 +246,8 @@ def main(
                 updated = True
 
             if done:
-                updated = False
+                if render:
+                    updated = False
                 break
 
         if render:
