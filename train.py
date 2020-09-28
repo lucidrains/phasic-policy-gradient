@@ -243,8 +243,8 @@ def main(
     num_episodes = 50000,
     max_timesteps = 400,
     actor_hidden_dim = 64,
-    critic_hidden_dim = 64,
-    max_memories = 2000,
+    critic_hidden_dim = 128,
+    max_memories = 10000,
     minibatch_size = 64,
     lr = 0.002,
     betas = (0.9, 0.999),
@@ -252,12 +252,12 @@ def main(
     eps_clip = 0.2,
     value_clip = 0.1,
     beta_s = .01,
-    update_timesteps = 2000,
+    update_timesteps = 10000,
     epochs = 1,
     epochs_aux = 6,
     seed = None,
     render = False,
-    render_every_eps = 500
+    render_every_eps = 1000
 ):
     env = gym.make(env_name)
     state_dim = env.observation_space.shape[0]
