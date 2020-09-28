@@ -73,7 +73,8 @@ class PPG:
     ):
         self.actor = Actor(state_dim, actor_hidden_dim, num_actions).to(device)
         self.critic = Critic(state_dim, critic_hidden_dim).to(device)
-        self.optimizer = Adam([*self.actor.parameters(), *self.critic.parameters()], lr=lr, betas=betas)
+        self.opt_actor = Adam(self.actor.parameters(), lr=lr, betas=betas)
+        self.opt_critic = Adam(self.critic.parameters(), lr=lr, betas=betas)
 
         self.epochs = epochs
 
