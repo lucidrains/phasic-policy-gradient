@@ -1,6 +1,5 @@
 import fire
-from collections import deque
-from collections import namedtuple
+from collections import deque, namedtuple
 
 import numpy as np
 import torch
@@ -21,9 +20,75 @@ def exists(val):
 
 # networks
 
+class Actor(nn.Module):
+    def __init__(self, state_dim, hidden_dim, num_actions):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(state_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh()
+        )
+
+        self.action_head = nn.Sequential(
+            nn.Linear(hidden_dim, num_actions),
+            nn.Softmax(dim=-1)
+        )
+
+        self.value_head = nn.Linear(hidden_dim, 1)
+
+    def forward(self, x):
+        hidden = self.net(x)
+        return self.action_head(hidden), self.value_head(hidden)
+
+class Critic(nn.Module):
+    def __init__(self, state_dim, hidden_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(state_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
 # agent
 
+class PPG:
+    def __init__(
+        self,
+        state_dim,
+        num_actions,
+        actor_hidden_dim,
+        critic_hidden_dim,
+    ):
+        self.actor = Actor(state_dim, actor_hidden_dim, num_actions).to(device)
+        self.critic = Critic(state_dim, critic_hidden_dim).to(device)
+
 # replay buffer
+
+Memory = namedtuple('Memory', ['state', 'action', 'done'])
+
+class ReplayBuffer:
+    def __init__(self, max_length):
+        self.memories = deque([])
+        self.max_length = max_length
+
+    def __len__(self):
+        return len(self.memories)
+
+    def clear(self):
+        self.memories.clear()
+
+    def append(self, el):
+        self.memories.append(el)
+        if len(self.memories) > self.max_length:
+            self.memories.popleft()
 
 # main
 
@@ -31,10 +96,18 @@ def main(
     env_name = 'LunarLander-v2',
     num_episodes = 100,
     max_timesteps = 300,
+    actor_hidden_dim = 256,
+    critic_hidden_dim = 256,
+    max_memories = 300,
     seed = None,
     render = False
 ):
     env = gym.make(env_name)
+    state_dim = env.observation_space.shape[0]
+    num_actions = env.action_space.n
+
+    memories = ReplayBuffer(max_memories)
+    agent = PPG(state_dim, num_actions, actor_hidden_dim, critic_hidden_dim)
 
     if exists(seed):
         torch.manual_seed(seed)
@@ -42,16 +115,23 @@ def main(
 
     for eps in range(num_episodes):
         print(f'running episode {eps}')
-        env.reset()
+        state = env.reset()
 
         for timestep in range(max_timesteps):
             if render:
                 env.render()
 
-            action = env.action_space.sample()
-            state, reward, done, info = env.step(action)
+            state = torch.from_numpy(state).to(device)
+            action_probs, _ = agent.actor(state)
+            dist = Categorical(action_probs)
+            action = dist.sample().item()
+
+            state, reward, done, _ = env.step(action)
+            memory = Memory(state, reward, done)
+            memories.append(memory)
 
             if done:
+                memories.clear()
                 break
 
         if render:
