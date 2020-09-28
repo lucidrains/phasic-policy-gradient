@@ -4,6 +4,7 @@ from collections import deque, namedtuple
 import numpy as np
 import torch
 from torch import nn
+from torch.optim import Adam
 from torch.distributions import Categorical
 import torch.nn.functional as F
 
@@ -66,13 +67,22 @@ class PPG:
         num_actions,
         actor_hidden_dim,
         critic_hidden_dim,
+        epochs,
+        lr,
+        betas
     ):
         self.actor = Actor(state_dim, actor_hidden_dim, num_actions).to(device)
         self.critic = Critic(state_dim, critic_hidden_dim).to(device)
+        self.optimizer = Adam([*self.actor.parameters(), *self.critic.parameters()], lr=lr, betas=betas)
+
+        self.epochs = epochs
+
+    def learn(self, memories):
+        memories.clear()
 
 # replay buffer
 
-Memory = namedtuple('Memory', ['state', 'action', 'done'])
+Memory = namedtuple('Memory', ['state', 'action', 'action_log_prob', 'reward', 'done'])
 
 class ReplayBuffer:
     def __init__(self, max_length):
@@ -99,6 +109,12 @@ def main(
     actor_hidden_dim = 256,
     critic_hidden_dim = 256,
     max_memories = 300,
+    lr = 3e-4,
+    betas = (0.9, 0.999),
+    eps_clip = 0.2,
+    value_clip = 0.2,
+    update_timesteps = 2000,
+    epochs = 4,
     seed = None,
     render = False
 ):
@@ -107,31 +123,40 @@ def main(
     num_actions = env.action_space.n
 
     memories = ReplayBuffer(max_memories)
-    agent = PPG(state_dim, num_actions, actor_hidden_dim, critic_hidden_dim)
+    agent = PPG(state_dim, num_actions, actor_hidden_dim, critic_hidden_dim, epochs, lr, betas)
 
     if exists(seed):
         torch.manual_seed(seed)
         np.random.seed(seed)
+
+    time = 0
 
     for eps in range(num_episodes):
         print(f'running episode {eps}')
         state = env.reset()
 
         for timestep in range(max_timesteps):
+            time += 1
+
             if render:
                 env.render()
 
             state = torch.from_numpy(state).to(device)
             action_probs, _ = agent.actor(state)
             dist = Categorical(action_probs)
-            action = dist.sample().item()
+            action = dist.sample()
+            action_log_prob = dist.log_prob(action)
+            action = action.item()
 
             state, reward, done, _ = env.step(action)
-            memory = Memory(state, reward, done)
+
+            memory = Memory(state, action, action_log_prob, reward, done)
             memories.append(memory)
 
+            if timestep % update_timesteps == 0:
+                agent.learn(memories)
+
             if done:
-                memories.clear()
                 break
 
         if render:
