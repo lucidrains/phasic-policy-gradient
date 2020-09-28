@@ -1,9 +1,11 @@
 import fire
 from collections import deque, namedtuple
 
+from tqdm import tqdm
 import numpy as np
 import torch
 from torch import nn
+from torch.utils.data import Dataset, DataLoader
 from torch.optim import Adam
 from torch.distributions import Categorical
 import torch.nn.functional as F
@@ -66,7 +68,30 @@ class Critic(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+# dataloaders
+
+class ExperienceDataset(Dataset):
+    def __init__(self, data):
+        super().__init__()
+        self.data = data
+
+    def __len__(self):
+        return len(self.data[0])
+
+    def __getitem__(self, ind):
+        return tuple(map(lambda t: t[ind], self.data))
+
+def create_shuffled_dataloader(data, batch_size):
+    ds = ExperienceDataset(data)
+    return DataLoader(ds, batch_size = batch_size, shuffle = True)
+
 # agent
+
+def clipped_value_loss(values, rewards, old_values, clip):
+    value_clipped = old_values + (values - old_values).clamp(-clip, clip)
+    value_loss_1 = (value_clipped - rewards) ** 2
+    value_loss_2 = (values - rewards) ** 2
+    return 0.5 * torch.mean(torch.max(value_loss_1, value_loss_2))
 
 class PPG:
     def __init__(
@@ -77,6 +102,7 @@ class PPG:
         critic_hidden_dim,
         epochs,
         epochs_aux,
+        minibatch_size,
         lr,
         betas,
         gamma,
@@ -89,6 +115,8 @@ class PPG:
         self.opt_actor = Adam(self.actor.parameters(), lr=lr, betas=betas)
         self.opt_critic = Adam(self.critic.parameters(), lr=lr, betas=betas)
 
+        self.minibatch_size = minibatch_size
+
         self.epochs = epochs
         self.epochs_aux = epochs_aux
 
@@ -98,6 +126,7 @@ class PPG:
         self.value_clip = value_clip
 
     def learn(self, memories):
+        # get discounted sum of rewards
         rewards = []
         discounted_reward = 0
         for mem in reversed(memories.data):
@@ -105,6 +134,7 @@ class PPG:
             discounted_reward = reward + (self.gamma * discounted_reward * (1 - float(done)))
             rewards.insert(0, discounted_reward)
 
+        # retrieve and prepare data from memory for training
         states = []
         actions = []
         old_log_probs = []
@@ -115,6 +145,7 @@ class PPG:
             old_log_probs.append(mem.action_log_prob)
 
         to_torch_tensor = lambda t: torch.stack(t).to(device).detach()
+
         states = to_torch_tensor(states)
         actions = to_torch_tensor(actions)
         old_log_probs = to_torch_tensor(old_log_probs)
@@ -122,40 +153,62 @@ class PPG:
         rewards = torch.tensor(rewards).float().to(device)
         rewards = normalize(rewards)
 
+        # get old value as reference for clipping new value updates
+        old_values = self.critic(states).detach_()
+
+        # prepare dataloader for policy phase training
+        dl = create_shuffled_dataloader([states, actions, old_log_probs, rewards, old_values], self.minibatch_size)
+
+        # policy phase training, similar to original PPO
         for _ in range(self.epochs):
-            action_probs, _ = self.actor(states)
-            values = self.critic(states)
-            dist = Categorical(action_probs)
-            action_log_probs = dist.log_prob(actions)
-            entropy = dist.entropy()
+            for states, actions, old_log_probs, rewards, old_values in dl:
+                action_probs, _ = self.actor(states)
+                values = self.critic(states)
+                dist = Categorical(action_probs)
+                action_log_probs = dist.log_prob(actions)
+                entropy = dist.entropy()
 
-            ratios = (action_log_probs - old_log_probs).exp()
+                # calculate clipped surrogate objective, classic PPO loss
+                ratios = (action_log_probs - old_log_probs).exp()
+                advantages = rewards - values.detach()
+                surr1 = ratios * advantages
+                surr2 = ratios.clamp(1 - self.eps_clip, 1 + self.eps_clip) * advantages
+                policy_loss = - torch.min(surr1, surr2) - self.beta_s * entropy
 
-            advantages = rewards - values.detach()
-            surr1 = ratios * advantages
-            surr2 = ratios.clamp(1 - self.eps_clip, 1 + self.eps_clip) * advantages
-            policy_loss = - torch.min(surr1, surr2) - self.beta_s * entropy
+                update_network_(policy_loss, self.opt_actor)
 
-            value_loss = 0.5 * F.mse_loss(values.flatten(), rewards)
+                # calculate value loss and update value network separate from policy network
+                value_loss = clipped_value_loss(values, rewards, old_values, self.value_clip)
 
-            update_network_(policy_loss, self.opt_actor)
-            update_network_(value_loss, self.opt_critic)
+                update_network_(value_loss, self.opt_critic)
 
+        # get old action and value predictions for minimizing kl divergence and clipping respectively
         old_action_probs, _ = self.actor(states)
         old_action_logprobs = old_action_probs.log().detach_()
+        old_values = self.critic(states).detach_()
 
+        # prepared dataloader for auxiliary phase training
+        dl = create_shuffled_dataloader([states, actions, old_action_logprobs, rewards, old_values], self.minibatch_size)
+
+        # the proposed auxiliary phase training
+        # where the value is distilled into the policy network, while making sure the policy network does not change the action predictions (kl div loss)
         for _ in range(self.epochs_aux):
-            action_probs, policy_values = self.actor(states)
-            action_logprobs = action_probs.log()
-            aux_loss = 0.5 * F.mse_loss(policy_values.flatten(), rewards)
-            policy_loss = aux_loss + F.kl_div(action_logprobs, old_action_logprobs, log_target = True, reduction = 'batchmean')
+            for states, actions, old_action_logprobs, rewards, old_values in dl:
+                action_probs, policy_values = self.actor(states)
+                action_logprobs = action_probs.log()
 
-            update_network_(policy_loss, self.opt_actor)
+                # policy network loss copmoses of both the kl div loss as well as the auxiliary loss
+                aux_loss = 0.5 * F.mse_loss(policy_values.flatten(), rewards)
+                loss_kl = F.kl_div(action_logprobs, old_action_logprobs, log_target = True, reduction = 'batchmean')
+                policy_loss = aux_loss + loss_kl
 
-            values = self.critic(states)
-            value_loss = 0.5 * F.mse_loss(values.flatten(), rewards)
+                update_network_(policy_loss, self.opt_actor)
 
-            update_network_(value_loss, self.opt_critic)
+                # paper says it is important to train the value network extra during the auxiliary phase
+                values = self.critic(states)
+                value_loss = clipped_value_loss(values, rewards, old_values, self.value_clip)
+
+                update_network_(value_loss, self.opt_critic)
 
         memories.clear()
 
@@ -187,16 +240,17 @@ class ReplayBuffer:
 
 def main(
     env_name = 'LunarLander-v2',
-    num_episodes = 100000,
+    num_episodes = 50000,
     max_timesteps = 400,
     actor_hidden_dim = 64,
     critic_hidden_dim = 64,
     max_memories = 2000,
+    minibatch_size = 64,
     lr = 0.002,
     betas = (0.9, 0.999),
     gamma = 0.99,
     eps_clip = 0.2,
-    value_clip = 0.2,
+    value_clip = 0.1,
     beta_s = .01,
     update_timesteps = 2000,
     epochs = 1,
@@ -210,7 +264,7 @@ def main(
     num_actions = env.action_space.n
 
     memories = ReplayBuffer(max_memories)
-    agent = PPG(state_dim, num_actions, actor_hidden_dim, critic_hidden_dim, epochs, epochs_aux, lr, betas, gamma, beta_s, eps_clip, value_clip)
+    agent = PPG(state_dim, num_actions, actor_hidden_dim, critic_hidden_dim, epochs, epochs_aux, minibatch_size, lr, betas, gamma, beta_s, eps_clip, value_clip)
 
     if exists(seed):
         torch.manual_seed(seed)
@@ -219,8 +273,7 @@ def main(
     time = 0
     updated = False
 
-    for eps in range(num_episodes):
-        print(f'running episode {eps}')
+    for eps in tqdm(range(num_episodes), desc='episodes'):
         render = eps % render_every_eps == 0
         state = env.reset()
         for timestep in range(max_timesteps):
