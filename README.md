@@ -26,3 +26,14 @@ $ python train.py --render
     primaryClass={cs.LG}
 }
 ```
+
+```bibtex
+@misc{vieillard2020munchausen,
+      title={Munchausen Reinforcement Learning},
+      author={Nino Vieillard and Olivier Pietquin and Matthieu Geist},
+      year={2020},
+      eprint={2007.14430},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG}
+}
+```

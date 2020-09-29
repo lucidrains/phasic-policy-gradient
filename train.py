@@ -92,8 +92,8 @@ def create_shuffled_dataloader(data, batch_size):
 
 def clipped_value_loss(values, rewards, old_values, clip):
     value_clipped = old_values + (values - old_values).clamp(-clip, clip)
-    value_loss_1 = (value_clipped - rewards) ** 2
-    value_loss_2 = (values - rewards) ** 2
+    value_loss_1 = F.smooth_l1_loss(value_clipped.flatten(), rewards, reduction = 'none')
+    value_loss_2 = F.smooth_l1_loss(values.flatten(), rewards, reduction = 'none')
     return 0.5 * torch.mean(torch.max(value_loss_1, value_loss_2))
 
 class PPG:
@@ -125,6 +125,7 @@ class PPG:
 
         self.gamma = gamma
         self.beta_s = beta_s
+
         self.eps_clip = eps_clip
         self.value_clip = value_clip
 
@@ -237,7 +238,7 @@ def main(
     actor_hidden_dim = 64,
     critic_hidden_dim = 64,
     minibatch_size = 64,
-    lr = 0.002,
+    lr = 0.0005,
     betas = (0.9, 0.999),
     gamma = 0.99,
     eps_clip = 0.2,
@@ -258,7 +259,21 @@ def main(
     memories = deque([])
     aux_memories = deque([])
 
-    agent = PPG(state_dim, num_actions, actor_hidden_dim, critic_hidden_dim, epochs, epochs_aux, minibatch_size, lr, betas, gamma, beta_s, eps_clip, value_clip)
+    agent = PPG(
+        state_dim,
+        num_actions,
+        actor_hidden_dim,
+        critic_hidden_dim,
+        epochs,
+        epochs_aux,
+        minibatch_size,
+        lr,
+        betas,
+        gamma,
+        beta_s,
+        eps_clip,
+        value_clip
+    )
 
     if exists(seed):
         torch.manual_seed(seed)
