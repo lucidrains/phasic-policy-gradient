@@ -33,6 +33,13 @@ def update_network_(loss, optimizer):
     loss.mean().backward()
     optimizer.step()
 
+def init_(m):
+    if isinstance(m, nn.Linear):
+        gain = torch.nn.init.calculate_gain('tanh')
+        torch.nn.init.orthogonal_(m.weight, gain)
+        if m.bias is not None:
+            torch.nn.init.zeros_(m.bias)
+
 # networks
 
 class Actor(nn.Module):
@@ -53,6 +60,7 @@ class Actor(nn.Module):
         )
 
         self.value_head = nn.Linear(hidden_dim, 1)
+        self.apply(init_)
 
     def forward(self, x):
         hidden = self.net(x)
@@ -68,6 +76,7 @@ class Critic(nn.Module):
             nn.Tanh(),
             nn.Linear(hidden_dim, 1),
         )
+        self.apply(init_)
 
     def forward(self, x):
         return self.net(x)
@@ -218,22 +227,23 @@ class PPG:
 
         # get old action and value predictions for minimizing kl divergence and clipping respectively
         old_action_probs, _ = self.actor(states)
-        old_action_logprobs = old_action_probs.log().detach_()
-        old_values = self.critic(states).detach_()
+        old_action_probs.detach_()
+
+        old_values = self.critic(states).detach()
 
         # prepared dataloader for auxiliary phase training
-        dl = create_shuffled_dataloader([states, old_action_logprobs, rewards, old_values], self.minibatch_size)
+        dl = create_shuffled_dataloader([states, old_action_probs, rewards, old_values], self.minibatch_size)
 
         # the proposed auxiliary phase training
         # where the value is distilled into the policy network, while making sure the policy network does not change the action predictions (kl div loss)
         for epoch in range(self.epochs_aux):
-            for states, old_action_logprobs, rewards, old_values in tqdm(dl, desc=f'auxiliary epoch {epoch}'):
+            for states, old_action_probs, rewards, old_values in tqdm(dl, desc=f'auxiliary epoch {epoch}'):
                 action_probs, policy_values = self.actor(states)
                 action_logprobs = action_probs.log()
 
                 # policy network loss copmoses of both the kl div loss as well as the auxiliary loss
                 aux_loss = 0.5 * F.mse_loss(policy_values.flatten(), rewards)
-                loss_kl = F.kl_div(action_logprobs, old_action_logprobs, log_target = True, reduction = 'batchmean')
+                loss_kl = F.kl_div(action_logprobs, old_action_probs)
                 policy_loss = aux_loss + loss_kl
 
                 update_network_(policy_loss, self.opt_actor)
@@ -250,7 +260,7 @@ def main(
     env_name = 'LunarLander-v2',
     num_episodes = 50000,
     max_timesteps = 400,
-    actor_hidden_dim = 64,
+    actor_hidden_dim = 128,
     critic_hidden_dim = 64,
     minibatch_size = 64,
     lr = 0.0005,
@@ -262,14 +272,19 @@ def main(
     update_timesteps = 5000,
     num_policy_updates_per_aux = 32,
     epochs = 1,
-    epochs_aux = 3,
+    epochs_aux = 6,
     seed = None,
     render = False,
     render_every_eps = 500,
     save_every = 1000,
-    load = False
+    load = False,
+    monitor = False
 ):
     env = gym.make(env_name)
+
+    if monitor:
+        env = gym.wrappers.Monitor(env, './tmp/')
+
     state_dim = env.observation_space.shape[0]
     num_actions = env.action_space.n
 
