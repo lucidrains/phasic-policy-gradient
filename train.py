@@ -104,7 +104,7 @@ def clipped_value_loss(values, rewards, old_values, clip):
     value_clipped = old_values + (values - old_values).clamp(-clip, clip)
     value_loss_1 = F.smooth_l1_loss(value_clipped.flatten(), rewards, reduction = 'none')
     value_loss_2 = F.smooth_l1_loss(values.flatten(), rewards, reduction = 'none')
-    return 0.5 * torch.mean(torch.max(value_loss_1, value_loss_2))
+    return torch.mean(torch.max(value_loss_1, value_loss_2))
 
 class PPG:
     def __init__(
@@ -242,8 +242,8 @@ class PPG:
                 action_logprobs = action_probs.log()
 
                 # policy network loss copmoses of both the kl div loss as well as the auxiliary loss
-                aux_loss = 0.5 * F.mse_loss(policy_values.flatten(), rewards)
-                loss_kl = F.kl_div(action_logprobs, old_action_probs)
+                aux_loss = F.smooth_l1_loss(policy_values.flatten(), rewards)
+                loss_kl = F.kl_div(action_logprobs, old_action_probs, reduction='batchmean')
                 policy_loss = aux_loss + loss_kl
 
                 update_network_(policy_loss, self.opt_actor)
