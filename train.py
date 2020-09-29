@@ -125,7 +125,7 @@ class PPG:
         self.eps_clip = eps_clip
         self.value_clip = value_clip
 
-    def learn(self, memories):
+    def learn(self, memories, aux_memories):
         # get discounted sum of rewards
         rewards = []
         discounted_reward = 0
@@ -152,6 +152,10 @@ class PPG:
 
         rewards = torch.tensor(rewards).float().to(device)
         rewards = normalize(rewards)
+
+        # store state and target values to auxiliary memory buffer for later training
+        aux_memory = AuxMemory(states, rewards)
+        aux_memories.append(aux_memory)
 
         # get old value as reference for clipping new value updates
         old_values = self.critic(states).detach_()
@@ -182,18 +186,29 @@ class PPG:
 
                 update_network_(value_loss, self.opt_critic)
 
+    def learn_aux(self, aux_memories):
+        # gather states and target values into one tensor
+        states = []
+        rewards = []
+        for state, reward in aux_memories.data:
+            states.append(state)
+            rewards.append(reward)
+
+        states = torch.cat(states)
+        rewards = torch.cat(rewards)
+
         # get old action and value predictions for minimizing kl divergence and clipping respectively
         old_action_probs, _ = self.actor(states)
         old_action_logprobs = old_action_probs.log().detach_()
         old_values = self.critic(states).detach_()
 
         # prepared dataloader for auxiliary phase training
-        dl = create_shuffled_dataloader([states, actions, old_action_logprobs, rewards, old_values], self.minibatch_size)
+        dl = create_shuffled_dataloader([states, old_action_logprobs, rewards, old_values], self.minibatch_size)
 
         # the proposed auxiliary phase training
         # where the value is distilled into the policy network, while making sure the policy network does not change the action predictions (kl div loss)
         for _ in range(self.epochs_aux):
-            for states, actions, old_action_logprobs, rewards, old_values in dl:
+            for states, old_action_logprobs, rewards, old_values in dl:
                 action_probs, policy_values = self.actor(states)
                 action_logprobs = action_probs.log()
 
@@ -210,16 +225,14 @@ class PPG:
 
                 update_network_(value_loss, self.opt_critic)
 
-        memories.clear()
-
 # replay buffer
 
 Memory = namedtuple('Memory', ['state', 'action', 'action_log_prob', 'reward', 'done'])
+AuxMemory = namedtuple('Memory', ['state', 'target_value'])
 
 class ReplayBuffer:
-    def __init__(self, max_length):
+    def __init__(self):
         self.memories = deque([])
-        self.max_length = max_length
 
     def __len__(self):
         return len(self.memories)
@@ -233,8 +246,6 @@ class ReplayBuffer:
 
     def append(self, el):
         self.memories.append(el)
-        if len(self.memories) > self.max_length:
-            self.memories.popleft()
 
 # main
 
@@ -243,8 +254,7 @@ def main(
     num_episodes = 50000,
     max_timesteps = 400,
     actor_hidden_dim = 64,
-    critic_hidden_dim = 128,
-    max_memories = 10000,
+    critic_hidden_dim = 64,
     minibatch_size = 64,
     lr = 0.002,
     betas = (0.9, 0.999),
@@ -252,18 +262,21 @@ def main(
     eps_clip = 0.2,
     value_clip = 0.1,
     beta_s = .01,
-    update_timesteps = 10000,
+    update_timesteps = 5000,
+    num_policy_updates_per_aux = 32,
     epochs = 1,
     epochs_aux = 6,
     seed = None,
     render = False,
-    render_every_eps = 1000
+    render_every_eps = 500
 ):
     env = gym.make(env_name)
     state_dim = env.observation_space.shape[0]
     num_actions = env.action_space.n
 
-    memories = ReplayBuffer(max_memories)
+    memories = ReplayBuffer()
+    aux_memories = ReplayBuffer()
+
     agent = PPG(state_dim, num_actions, actor_hidden_dim, critic_hidden_dim, epochs, epochs_aux, minibatch_size, lr, betas, gamma, beta_s, eps_clip, value_clip)
 
     if exists(seed):
@@ -272,6 +285,7 @@ def main(
 
     time = 0
     updated = False
+    num_policy_updates = 0
 
     for eps in tqdm(range(num_episodes), desc='episodes'):
         render = eps % render_every_eps == 0
@@ -295,7 +309,14 @@ def main(
             memories.append(memory)
 
             if time % update_timesteps == 0:
-                agent.learn(memories)
+                agent.learn(memories, aux_memories)
+                num_policy_updates += 1
+                memories.clear()
+
+                if num_policy_updates % num_policy_updates_per_aux == 0:
+                    agent.learn_aux(aux_memories)
+                    aux_memories.clear()
+
                 updated = True
 
             if done:
