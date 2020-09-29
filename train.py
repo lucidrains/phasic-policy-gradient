@@ -18,7 +18,7 @@ import gym
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 Memory = namedtuple('Memory', ['state', 'action', 'action_log_prob', 'reward', 'done'])
-AuxMemory = namedtuple('Memory', ['state', 'target_value'])
+AuxMemory = namedtuple('Memory', ['state', 'target_value', 'old_values'])
 
 # helpers
 
@@ -181,12 +181,12 @@ class PPG:
         rewards = torch.tensor(rewards).float().to(device)
         rewards = normalize(rewards)
 
-        # store state and target values to auxiliary memory buffer for later training
-        aux_memory = AuxMemory(states, rewards)
-        aux_memories.append(aux_memory)
-
         # get old value as reference for clipping new value updates
         old_values = self.critic(states).detach_()
+
+        # store state and target values to auxiliary memory buffer for later training
+        aux_memory = AuxMemory(states, rewards, old_values)
+        aux_memories.append(aux_memory)
 
         # prepare dataloader for policy phase training
         dl = create_shuffled_dataloader([states, actions, old_log_probs, rewards, old_values], self.minibatch_size)
@@ -218,18 +218,19 @@ class PPG:
         # gather states and target values into one tensor
         states = []
         rewards = []
-        for state, reward in aux_memories:
+        old_values = []
+        for state, reward, old_value in aux_memories:
             states.append(state)
             rewards.append(reward)
+            old_values.append(old_value)
 
         states = torch.cat(states)
         rewards = torch.cat(rewards)
+        old_values = torch.cat(old_values)
 
-        # get old action and value predictions for minimizing kl divergence and clipping respectively
+        # get old action predictions for minimizing kl divergence and clipping respectively
         old_action_probs, _ = self.actor(states)
         old_action_probs.detach_()
-
-        old_values = self.critic(states).detach()
 
         # prepared dataloader for auxiliary phase training
         dl = create_shuffled_dataloader([states, old_action_probs, rewards, old_values], self.minibatch_size)
@@ -242,7 +243,7 @@ class PPG:
                 action_logprobs = action_probs.log()
 
                 # policy network loss copmoses of both the kl div loss as well as the auxiliary loss
-                aux_loss = F.smooth_l1_loss(policy_values.flatten(), rewards)
+                aux_loss = clipped_value_loss(policy_values, rewards, old_values, self.value_clip)
                 loss_kl = F.kl_div(action_logprobs, old_action_probs, reduction='batchmean')
                 policy_loss = aux_loss + loss_kl
 
