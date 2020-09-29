@@ -16,6 +16,9 @@ import gym
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
+Memory = namedtuple('Memory', ['state', 'action', 'action_log_prob', 'reward', 'done'])
+AuxMemory = namedtuple('Memory', ['state', 'target_value'])
+
 # helpers
 
 def exists(val):
@@ -129,7 +132,7 @@ class PPG:
         # get discounted sum of rewards
         rewards = []
         discounted_reward = 0
-        for mem in reversed(memories.data):
+        for mem in reversed(memories):
             reward, done = mem.reward, mem.done
             discounted_reward = reward + (self.gamma * discounted_reward * (1 - float(done)))
             rewards.insert(0, discounted_reward)
@@ -139,7 +142,7 @@ class PPG:
         actions = []
         old_log_probs = []
 
-        for mem in memories.data:
+        for mem in memories:
             states.append(torch.from_numpy(mem.state))
             actions.append(torch.tensor(mem.action))
             old_log_probs.append(mem.action_log_prob)
@@ -190,7 +193,7 @@ class PPG:
         # gather states and target values into one tensor
         states = []
         rewards = []
-        for state, reward in aux_memories.data:
+        for state, reward in aux_memories:
             states.append(state)
             rewards.append(reward)
 
@@ -207,8 +210,8 @@ class PPG:
 
         # the proposed auxiliary phase training
         # where the value is distilled into the policy network, while making sure the policy network does not change the action predictions (kl div loss)
-        for _ in range(self.epochs_aux):
-            for states, old_action_logprobs, rewards, old_values in dl:
+        for epoch in range(self.epochs_aux):
+            for states, old_action_logprobs, rewards, old_values in tqdm(dl, desc=f'auxiliary epoch {epoch}'):
                 action_probs, policy_values = self.actor(states)
                 action_logprobs = action_probs.log()
 
@@ -225,28 +228,6 @@ class PPG:
 
                 update_network_(value_loss, self.opt_critic)
 
-# replay buffer
-
-Memory = namedtuple('Memory', ['state', 'action', 'action_log_prob', 'reward', 'done'])
-AuxMemory = namedtuple('Memory', ['state', 'target_value'])
-
-class ReplayBuffer:
-    def __init__(self):
-        self.memories = deque([])
-
-    def __len__(self):
-        return len(self.memories)
-
-    @property
-    def data(self):
-        return self.memories
-
-    def clear(self):
-        self.memories.clear()
-
-    def append(self, el):
-        self.memories.append(el)
-
 # main
 
 def main(
@@ -260,12 +241,12 @@ def main(
     betas = (0.9, 0.999),
     gamma = 0.99,
     eps_clip = 0.2,
-    value_clip = 0.1,
+    value_clip = 0.2,
     beta_s = .01,
     update_timesteps = 5000,
     num_policy_updates_per_aux = 32,
     epochs = 1,
-    epochs_aux = 6,
+    epochs_aux = 3,
     seed = None,
     render = False,
     render_every_eps = 500
@@ -274,8 +255,8 @@ def main(
     state_dim = env.observation_space.shape[0]
     num_actions = env.action_space.n
 
-    memories = ReplayBuffer()
-    aux_memories = ReplayBuffer()
+    memories = deque([])
+    aux_memories = deque([])
 
     agent = PPG(state_dim, num_actions, actor_hidden_dim, critic_hidden_dim, epochs, epochs_aux, minibatch_size, lr, betas, gamma, beta_s, eps_clip, value_clip)
 
