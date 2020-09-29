@@ -1,3 +1,4 @@
+import os
 import fire
 from collections import deque, namedtuple
 
@@ -129,6 +130,20 @@ class PPG:
         self.eps_clip = eps_clip
         self.value_clip = value_clip
 
+    def save(self):
+        torch.save({
+            'actor': self.actor.state_dict(),
+            'critic': self.critic.state_dict()
+        }, f'./ppg.pt')
+
+    def load(self):
+        if not os.path.exists('./ppg.pt'):
+            return
+
+        data = torch.load(f'./ppg.pt')
+        self.actor.load_state_dict(data['actor'])
+        self.critic.load_state_dict(data['critic'])
+
     def learn(self, memories, aux_memories):
         # get discounted sum of rewards
         rewards = []
@@ -250,7 +265,9 @@ def main(
     epochs_aux = 3,
     seed = None,
     render = False,
-    render_every_eps = 500
+    render_every_eps = 500,
+    save_every = 1000,
+    load = False
 ):
     env = gym.make(env_name)
     state_dim = env.observation_space.shape[0]
@@ -274,6 +291,9 @@ def main(
         eps_clip,
         value_clip
     )
+
+    if load:
+        agent.load()
 
     if exists(seed):
         torch.manual_seed(seed)
@@ -322,6 +342,9 @@ def main(
 
         if render:
             env.close()
+
+        if eps % save_every == 0:
+            agent.save()
 
 if __name__ == '__main__':
     fire.Fire(main)
