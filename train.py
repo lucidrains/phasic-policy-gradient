@@ -17,8 +17,25 @@ import gym
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
+# data
+
 Memory = namedtuple('Memory', ['state', 'action', 'action_log_prob', 'reward', 'done'])
 AuxMemory = namedtuple('Memory', ['state', 'target_value', 'old_values'])
+
+class ExperienceDataset(Dataset):
+    def __init__(self, data):
+        super().__init__()
+        self.data = data
+
+    def __len__(self):
+        return len(self.data[0])
+
+    def __getitem__(self, ind):
+        return tuple(map(lambda t: t[ind], self.data))
+
+def create_shuffled_dataloader(data, batch_size):
+    ds = ExperienceDataset(data)
+    return DataLoader(ds, batch_size = batch_size, shuffle = True)
 
 # helpers
 
@@ -80,23 +97,6 @@ class Critic(nn.Module):
 
     def forward(self, x):
         return self.net(x)
-
-# dataloaders
-
-class ExperienceDataset(Dataset):
-    def __init__(self, data):
-        super().__init__()
-        self.data = data
-
-    def __len__(self):
-        return len(self.data[0])
-
-    def __getitem__(self, ind):
-        return tuple(map(lambda t: t[ind], self.data))
-
-def create_shuffled_dataloader(data, batch_size):
-    ds = ExperienceDataset(data)
-    return DataLoader(ds, batch_size = batch_size, shuffle = True)
 
 # agent
 
@@ -320,12 +320,12 @@ def main(
     num_policy_updates = 0
 
     for eps in tqdm(range(num_episodes), desc='episodes'):
-        render = eps % render_every_eps == 0
+        render_eps = render and eps % render_every_eps == 0
         state = env.reset()
         for timestep in range(max_timesteps):
             time += 1
 
-            if updated and render:
+            if updated and render_eps:
                 env.render()
 
             state = torch.from_numpy(state).to(device)
@@ -352,11 +352,11 @@ def main(
                 updated = True
 
             if done:
-                if render:
+                if render_eps:
                     updated = False
                 break
 
-        if render:
+        if render_eps:
             env.close()
 
         if eps % save_every == 0:
