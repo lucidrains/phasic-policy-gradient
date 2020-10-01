@@ -168,7 +168,7 @@ class PPG:
         old_log_probs = []
 
         for mem in memories:
-            states.append(torch.from_numpy(mem.state))
+            states.append(mem.state)
             actions.append(torch.tensor(mem.action))
             old_log_probs.append(mem.action_log_prob)
 
@@ -260,7 +260,7 @@ class PPG:
 def main(
     env_name = 'LunarLander-v2',
     num_episodes = 50000,
-    max_timesteps = 800,
+    max_timesteps = 500,
     actor_hidden_dim = 32,
     critic_hidden_dim = 256,
     minibatch_size = 64,
@@ -270,7 +270,7 @@ def main(
     eps_clip = 0.2,
     value_clip = 0.2,
     beta_s = .01,
-    update_timesteps = 8000,
+    update_timesteps = 5000,
     num_policy_updates_per_aux = 32,
     epochs = 1,
     epochs_aux = 6,
@@ -335,10 +335,12 @@ def main(
             action_log_prob = dist.log_prob(action)
             action = action.item()
 
-            state, reward, done, _ = env.step(action)
+            next_state, reward, done, _ = env.step(action)
 
             memory = Memory(state, action, action_log_prob, reward, done)
             memories.append(memory)
+
+            state = next_state
 
             if time % update_timesteps == 0:
                 agent.learn(memories, aux_memories)
