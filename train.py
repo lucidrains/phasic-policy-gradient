@@ -19,7 +19,7 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 # data
 
-Memory = namedtuple('Memory', ['state', 'action', 'action_log_prob', 'reward', 'done'])
+Memory = namedtuple('Memory', ['state', 'action', 'action_log_prob', 'reward', 'done', 'value'])
 AuxMemory = namedtuple('Memory', ['state', 'target_value', 'old_values'])
 
 class ExperienceDataset(Dataset):
@@ -102,8 +102,8 @@ class Critic(nn.Module):
 
 def clipped_value_loss(values, rewards, old_values, clip):
     value_clipped = old_values + (values - old_values).clamp(-clip, clip)
-    value_loss_1 = F.smooth_l1_loss(value_clipped.flatten(), rewards, reduction = 'none')
-    value_loss_2 = F.smooth_l1_loss(values.flatten(), rewards, reduction = 'none')
+    value_loss_1 = (value_clipped.flatten() - rewards) ** 2
+    value_loss_2 = (values.flatten() - rewards) ** 2
     return torch.mean(torch.max(value_loss_1, value_loss_2))
 
 class PPG:
@@ -118,6 +118,7 @@ class PPG:
         minibatch_size,
         lr,
         betas,
+        lam,
         gamma,
         beta_s,
         eps_clip,
@@ -133,6 +134,7 @@ class PPG:
         self.epochs = epochs
         self.epochs_aux = epochs_aux
 
+        self.lam = lam
         self.gamma = gamma
         self.beta_s = beta_s
 
@@ -153,36 +155,44 @@ class PPG:
         self.actor.load_state_dict(data['actor'])
         self.critic.load_state_dict(data['critic'])
 
-    def learn(self, memories, aux_memories):
-        # get discounted sum of rewards
-        rewards = []
-        discounted_reward = 0
-        for mem in reversed(memories):
-            reward, done = mem.reward, mem.done
-            discounted_reward = reward + (self.gamma * discounted_reward * (1 - float(done)))
-            rewards.insert(0, discounted_reward)
-
+    def learn(self, memories, aux_memories, next_state):
         # retrieve and prepare data from memory for training
         states = []
         actions = []
         old_log_probs = []
+        rewards = []
+        masks = []
+        values = []
 
         for mem in memories:
             states.append(mem.state)
             actions.append(torch.tensor(mem.action))
             old_log_probs.append(mem.action_log_prob)
+            rewards.append(mem.reward)
+            masks.append(1 - float(mem.done))
+            values.append(mem.value)
 
+        # calculate generalized advantage estimate
+        next_state = torch.from_numpy(next_state).to(device)
+        next_value = self.critic(next_state).detach()
+        values = values + [next_value]
+
+        returns = []
+        gae = 0
+        for i in reversed(range(len(rewards))):
+            delta = rewards[i] + self.gamma * values[i + 1] * masks[i] - values[i]
+            gae = delta + self.gamma * self.lam * masks[i] * gae
+            returns.insert(0, gae + values[i])
+
+        # convert values to torch tensors
         to_torch_tensor = lambda t: torch.stack(t).to(device).detach()
 
         states = to_torch_tensor(states)
         actions = to_torch_tensor(actions)
+        old_values = to_torch_tensor(values[:-1])
         old_log_probs = to_torch_tensor(old_log_probs)
 
-        rewards = torch.tensor(rewards).float().to(device)
-        rewards = normalize(rewards)
-
-        # get old value as reference for clipping new value updates
-        old_values = self.critic(states).detach_()
+        rewards = torch.tensor(returns).float().to(device)
 
         # store state and target values to auxiliary memory buffer for later training
         aux_memory = AuxMemory(states, rewards, old_values)
@@ -202,7 +212,7 @@ class PPG:
 
                 # calculate clipped surrogate objective, classic PPO loss
                 ratios = (action_log_probs - old_log_probs).exp()
-                advantages = rewards - values.detach()
+                advantages = normalize(rewards - old_values.detach())
                 surr1 = ratios * advantages
                 surr2 = ratios.clamp(1 - self.eps_clip, 1 + self.eps_clip) * advantages
                 policy_loss = - torch.min(surr1, surr2) - self.beta_s * entropy
@@ -266,9 +276,10 @@ def main(
     minibatch_size = 64,
     lr = 0.0005,
     betas = (0.9, 0.999),
+    lam = 0.95,
     gamma = 0.99,
     eps_clip = 0.2,
-    value_clip = 0.2,
+    value_clip = 0.4,
     beta_s = .01,
     update_timesteps = 5000,
     num_policy_updates_per_aux = 32,
@@ -302,6 +313,7 @@ def main(
         minibatch_size,
         lr,
         betas,
+        lam,
         gamma,
         beta_s,
         eps_clip,
@@ -330,6 +342,8 @@ def main(
 
             state = torch.from_numpy(state).to(device)
             action_probs, _ = agent.actor(state)
+            value = agent.critic(state)
+
             dist = Categorical(action_probs)
             action = dist.sample()
             action_log_prob = dist.log_prob(action)
@@ -337,13 +351,13 @@ def main(
 
             next_state, reward, done, _ = env.step(action)
 
-            memory = Memory(state, action, action_log_prob, reward, done)
+            memory = Memory(state, action, action_log_prob, reward, done, value)
             memories.append(memory)
 
             state = next_state
 
             if time % update_timesteps == 0:
-                agent.learn(memories, aux_memories)
+                agent.learn(memories, aux_memories, next_state)
                 num_policy_updates += 1
                 memories.clear()
 
