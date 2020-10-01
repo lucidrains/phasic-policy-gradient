@@ -260,7 +260,7 @@ class PPG:
 def main(
     env_name = 'LunarLander-v2',
     num_episodes = 50000,
-    max_timesteps = 400,
+    max_timesteps = 800,
     actor_hidden_dim = 32,
     critic_hidden_dim = 256,
     minibatch_size = 64,
@@ -276,7 +276,7 @@ def main(
     epochs_aux = 6,
     seed = None,
     render = False,
-    render_every_eps = 500,
+    render_every_eps = 250,
     save_every = 1000,
     load = False,
     monitor = False
@@ -284,7 +284,7 @@ def main(
     env = gym.make(env_name)
 
     if monitor:
-        env = gym.wrappers.Monitor(env, './tmp/')
+        env = gym.wrappers.Monitor(env, './tmp/', force=True)
 
     state_dim = env.observation_space.shape[0]
     num_actions = env.action_space.n
