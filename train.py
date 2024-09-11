@@ -11,7 +11,7 @@ from torch.optim import Adam
 from torch.distributions import Categorical
 import torch.nn.functional as F
 
-import gym
+import gymnasium as gym
 
 # constants
 
@@ -292,10 +292,15 @@ def main(
     load = False,
     monitor = False
 ):
-    env = gym.make(env_name)
+    env = gym.make(env_name, render_mode = "rgb_array")
 
     if monitor:
-        env = gym.wrappers.Monitor(env, './tmp/', force=True)
+        env = gym.wrappers.RecordVideo(
+            env = env,
+            video_folder="./lunar-recording",
+            name_prefix = "lunar-video",
+            episode_trigger = lambda x: x % 2 == 0
+        )
 
     state_dim = env.observation_space.shape[0]
     num_actions = env.action_space.n
@@ -333,7 +338,12 @@ def main(
 
     for eps in tqdm(range(num_episodes), desc='episodes'):
         render_eps = render and eps % render_every_eps == 0
-        state = env.reset()
+
+        state, info = env.reset(seed = seed)
+
+        if monitor:
+            env.start_video_recorder()
+
         for timestep in range(max_timesteps):
             time += 1
 
@@ -349,7 +359,9 @@ def main(
             action_log_prob = dist.log_prob(action)
             action = action.item()
 
-            next_state, reward, done, _ = env.step(action)
+            next_state, reward, terminated, truncated, _ = env.step(action)
+
+            done = terminated or truncated
 
             memory = Memory(state, action, action_log_prob, reward, done, value)
             memories.append(memory)
@@ -374,6 +386,9 @@ def main(
 
         if render_eps:
             env.close()
+
+        if monitor:
+            env.close_video_recorder()
 
         if eps % save_every == 0:
             agent.save()

@@ -1,6 +1,7 @@
 box2d-py
 fire
-gym
+gymnasium[box2d]
+moviepy
 numpy
 torch
 tqdm
