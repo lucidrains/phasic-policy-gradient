@@ -22,7 +22,7 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 # data
 
 Memory = namedtuple('Memory', ['state', 'action', 'action_log_prob', 'reward', 'done', 'value'])
-AuxMemory = namedtuple('Memory', ['state', 'target_value', 'old_values'])
+AuxMemory = namedtuple('AuxMemory', ['state', 'target_value', 'old_values'])
 
 class ExperienceDataset(Dataset):
     def __init__(self, data):
@@ -350,7 +350,6 @@ def main(
         np.random.seed(seed)
 
     time = 0
-    updated = False
     num_policy_updates = 0
 
     for eps in tqdm(range(num_episodes), desc='episodes'):
@@ -386,8 +385,6 @@ def main(
                 if num_policy_updates % num_policy_updates_per_aux == 0:
                     agent.learn_aux(aux_memories)
                     aux_memories.clear()
-
-                updated = True
 
             if done:
                 break
