@@ -2,14 +2,16 @@ import os
 import fire
 from collections import deque, namedtuple
 
-from tqdm import tqdm
 import numpy as np
+from tqdm import tqdm
+
 import torch
 from torch import nn
-from torch.utils.data import Dataset, DataLoader
-from torch.optim import Adam
-from torch.distributions import Categorical
 import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+from torch.distributions import Categorical
+
+from adam_atan2_pytorch.adam_atan2_with_wasserstein_reg import AdamAtan2
 
 import gymnasium as gym
 
@@ -54,7 +56,8 @@ def init_(m):
     if isinstance(m, nn.Linear):
         gain = torch.nn.init.calculate_gain('tanh')
         torch.nn.init.orthogonal_(m.weight, gain)
-        if m.bias is not None:
+
+        if exists(m.bias):
             torch.nn.init.zeros_(m.bias)
 
 # networks
@@ -122,12 +125,13 @@ class PPG:
         gamma,
         beta_s,
         eps_clip,
-        value_clip
+        value_clip,
+        regen_reg_rate
     ):
         self.actor = Actor(state_dim, actor_hidden_dim, num_actions).to(device)
         self.critic = Critic(state_dim, critic_hidden_dim).to(device)
-        self.opt_actor = Adam(self.actor.parameters(), lr=lr, betas=betas)
-        self.opt_critic = Adam(self.critic.parameters(), lr=lr, betas=betas)
+        self.opt_actor = AdamAtan2(self.actor.parameters(), lr=lr, betas=betas, regen_reg_rate=regen_reg_rate)
+        self.opt_critic = AdamAtan2(self.critic.parameters(), lr=lr, betas=betas, regen_reg_rate=regen_reg_rate)
 
         self.minibatch_size = minibatch_size
 
@@ -281,6 +285,7 @@ def main(
     eps_clip = 0.2,
     value_clip = 0.4,
     beta_s = .01,
+    regen_reg_rate = 1e-3,
     update_timesteps = 5000,
     num_policy_updates_per_aux = 32,
     epochs = 1,
@@ -289,17 +294,23 @@ def main(
     render = False,
     render_every_eps = 250,
     save_every = 1000,
-    load = False,
-    monitor = False
+    clear_videos = False,
+    video_folder = './lunar-recording',
+    load = False
 ):
     env = gym.make(env_name, render_mode = "rgb_array")
 
-    if monitor:
+    if render:
+        if clear_videos:
+            from shutil import rmtree
+            rmtree(video_folder, ignore_errors = True)
+
         env = gym.wrappers.RecordVideo(
             env = env,
-            video_folder="./lunar-recording",
+            video_folder = video_folder,
             name_prefix = "lunar-video",
-            episode_trigger = lambda x: x % 2 == 0
+            episode_trigger = lambda eps_num: (eps_num % render_every_eps) == 0,
+            disable_logger = True
         )
 
     state_dim = env.observation_space.shape[0]
@@ -322,7 +333,8 @@ def main(
         gamma,
         beta_s,
         eps_clip,
-        value_clip
+        value_clip,
+        regen_reg_rate
     )
 
     if load:
@@ -337,18 +349,11 @@ def main(
     num_policy_updates = 0
 
     for eps in tqdm(range(num_episodes), desc='episodes'):
-        render_eps = render and eps % render_every_eps == 0
 
         state, info = env.reset(seed = seed)
 
-        if monitor:
-            env.start_video_recorder()
-
         for timestep in range(max_timesteps):
             time += 1
-
-            if updated and render_eps:
-                env.render()
 
             state = torch.from_numpy(state).to(device)
             action_probs, _ = agent.actor(state)
@@ -380,15 +385,7 @@ def main(
                 updated = True
 
             if done:
-                if render_eps:
-                    updated = False
                 break
-
-        if render_eps:
-            env.close()
-
-        if monitor:
-            env.close_video_recorder()
 
         if eps % save_every == 0:
             agent.save()

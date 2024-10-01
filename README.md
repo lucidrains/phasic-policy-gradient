@@ -20,11 +20,11 @@ $ python train.py --render
 
 ```bibtex
 @misc{cobbe2020phasic,
-    title={Phasic Policy Gradient},
-    author={Karl Cobbe and Jacob Hilton and Oleg Klimov and John Schulman},
-    year={2020},
-    eprint={2009.04416},
-    archivePrefix={arXiv},
-    primaryClass={cs.LG}
+    title   = {Phasic Policy Gradient},
+    author  = {Karl Cobbe and Jacob Hilton and Oleg Klimov and John Schulman},
+    year    = {2020},
+    eprint  = {2009.04416},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.LG}
 }
 ```
