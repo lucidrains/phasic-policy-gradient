@@ -1,5 +1,8 @@
-import os
+from __future__ import annotations
+
 import fire
+from pathlib import Path
+from shutil import rmtree
 from collections import deque, namedtuple
 
 import numpy as np
@@ -7,6 +10,7 @@ from tqdm import tqdm
 
 import torch
 from torch import nn
+from torch.nn import Module
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from torch.distributions import Categorical
@@ -17,12 +21,24 @@ import gymnasium as gym
 
 # constants
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 # data
 
-Memory = namedtuple('Memory', ['state', 'action', 'action_log_prob', 'reward', 'done', 'value'])
-AuxMemory = namedtuple('AuxMemory', ['state', 'target_value', 'old_values'])
+Memory = namedtuple('Memory', [
+    'state',
+    'action',
+    'action_log_prob',
+    'reward',
+    'done',
+    'value'
+])
+
+AuxMemory = namedtuple('AuxMemory', [
+    'state',
+    'target_value',
+    'old_values'
+])
 
 class ExperienceDataset(Dataset):
     def __init__(self, data):
@@ -44,6 +60,9 @@ def create_shuffled_dataloader(data, batch_size):
 def exists(val):
     return val is not None
 
+def divisible_by(num, den):
+    return (num % den) == 0
+
 def normalize(t, eps = 1e-5):
     return (t - t.mean()) / (t.std() + eps)
 
@@ -53,16 +72,20 @@ def update_network_(loss, optimizer):
     optimizer.step()
 
 def init_(m):
-    if isinstance(m, nn.Linear):
-        gain = torch.nn.init.calculate_gain('tanh')
-        torch.nn.init.orthogonal_(m.weight, gain)
+    if not isinstance(m, nn.Linear):
+        return
 
-        if exists(m.bias):
-            torch.nn.init.zeros_(m.bias)
+    gain = torch.nn.init.calculate_gain('tanh')
+    torch.nn.init.orthogonal_(m.weight, gain)
+
+    if not exists(m.bias):
+        return
+
+    torch.nn.init.zeros_(m.bias)
 
 # networks
 
-class Actor(nn.Module):
+class Actor(Module):
     def __init__(self, state_dim, hidden_dim, num_actions):
         super().__init__()
         self.net = nn.Sequential(
@@ -89,7 +112,7 @@ class Actor(nn.Module):
         hidden = self.net(x)
         return self.action_head(hidden), self.value_head(hidden)
 
-class Critic(nn.Module):
+class Critic(Module):
     def __init__(self, state_dim, hidden_dim):
         super().__init__()
         self.net = nn.Sequential(
@@ -131,10 +154,12 @@ class PPG:
         beta_s,
         eps_clip,
         value_clip,
-        regen_reg_rate
+        regen_reg_rate,
+        save_path = './ppg.pt'
     ):
         self.actor = Actor(state_dim, actor_hidden_dim, num_actions).to(device)
         self.critic = Critic(state_dim, critic_hidden_dim).to(device)
+
         self.opt_actor = AdamAtan2(self.actor.parameters(), lr=lr, betas=betas, regen_reg_rate=regen_reg_rate)
         self.opt_critic = AdamAtan2(self.critic.parameters(), lr=lr, betas=betas, regen_reg_rate=regen_reg_rate)
 
@@ -150,41 +175,42 @@ class PPG:
         self.eps_clip = eps_clip
         self.value_clip = value_clip
 
+        self.save_path = Path(save_path)
+
     def save(self):
         torch.save({
             'actor': self.actor.state_dict(),
             'critic': self.critic.state_dict()
-        }, f'./ppg.pt')
+        }, str(self.save_path))
 
     def load(self):
-        if not os.path.exists('./ppg.pt'):
+        if not self.save_path.exists():
             return
 
-        data = torch.load(f'./ppg.pt')
+        data = torch.load(str(self.save_path))
         self.actor.load_state_dict(data['actor'])
         self.critic.load_state_dict(data['critic'])
 
     def learn(self, memories, aux_memories, next_state):
         # retrieve and prepare data from memory for training
-        states = []
-        actions = []
-        old_log_probs = []
-        rewards = []
-        masks = []
-        values = []
 
-        for mem in memories:
-            states.append(mem.state)
-            actions.append(torch.tensor(mem.action))
-            old_log_probs.append(mem.action_log_prob)
-            rewards.append(mem.reward)
-            masks.append(1 - float(mem.done))
-            values.append(mem.value)
+        (
+            states,
+            actions,
+            old_log_probs,
+            rewards,
+            dones,
+            values
+        ) = zip(*memories)
+
+        actions = [torch.tensor(action) for action in actions]
+        masks = [(1. - float(done)) for done in dones]
 
         # calculate generalized advantage estimate
+
         next_state = torch.from_numpy(next_state).to(device)
         next_value = self.critic(next_state).detach()
-        values = values + [next_value]
+        values = list(values) + [next_value]
 
         returns = []
         gae = 0
@@ -194,6 +220,7 @@ class PPG:
             returns.insert(0, gae + values[i])
 
         # convert values to torch tensors
+
         to_torch_tensor = lambda t: torch.stack(t).to(device).detach()
 
         states = to_torch_tensor(states)
@@ -204,13 +231,16 @@ class PPG:
         rewards = torch.tensor(returns).float().to(device)
 
         # store state and target values to auxiliary memory buffer for later training
+
         aux_memory = AuxMemory(states, rewards, old_values)
         aux_memories.append(aux_memory)
 
         # prepare dataloader for policy phase training
+
         dl = create_shuffled_dataloader([states, actions, old_log_probs, rewards, old_values], self.minibatch_size)
 
         # policy phase training, similar to original PPO
+
         for _ in range(self.epochs):
             for states, actions, old_log_probs, rewards, old_values in dl:
                 action_probs, _ = self.actor(states)
@@ -220,6 +250,7 @@ class PPG:
                 entropy = dist.entropy()
 
                 # calculate clipped surrogate objective, classic PPO loss
+
                 ratios = (action_log_probs - old_log_probs).exp()
                 advantages = normalize(rewards - old_values.detach())
                 surr1 = ratios * advantages
@@ -229,39 +260,39 @@ class PPG:
                 update_network_(policy_loss, self.opt_actor)
 
                 # calculate value loss and update value network separate from policy network
+
                 value_loss = clipped_value_loss(values, rewards, old_values, self.value_clip)
 
                 update_network_(value_loss, self.opt_critic)
 
     def learn_aux(self, aux_memories):
         # gather states and target values into one tensor
-        states = []
-        rewards = []
-        old_values = []
-        for state, reward, old_value in aux_memories:
-            states.append(state)
-            rewards.append(reward)
-            old_values.append(old_value)
+
+        states, rewards, old_values = zip(*aux_memories)
 
         states = torch.cat(states)
         rewards = torch.cat(rewards)
         old_values = torch.cat(old_values)
 
         # get old action predictions for minimizing kl divergence and clipping respectively
+
         old_action_probs, _ = self.actor(states)
         old_action_probs.detach_()
 
         # prepared dataloader for auxiliary phase training
+
         dl = create_shuffled_dataloader([states, old_action_probs, rewards, old_values], self.minibatch_size)
 
         # the proposed auxiliary phase training
         # where the value is distilled into the policy network, while making sure the policy network does not change the action predictions (kl div loss)
+
         for epoch in range(self.epochs_aux):
             for states, old_action_probs, rewards, old_values in tqdm(dl, desc=f'auxiliary epoch {epoch}'):
                 action_probs, policy_values = self.actor(states)
                 action_logprobs = action_probs.log()
 
                 # policy network loss copmoses of both the kl div loss as well as the auxiliary loss
+
                 aux_loss = clipped_value_loss(policy_values, rewards, old_values, self.value_clip)
                 loss_kl = F.kl_div(action_logprobs, old_action_probs, reduction='batchmean')
                 policy_loss = aux_loss + loss_kl
@@ -269,6 +300,7 @@ class PPG:
                 update_network_(policy_loss, self.opt_actor)
 
                 # paper says it is important to train the value network extra during the auxiliary phase
+
                 values = self.critic(states)
                 value_loss = clipped_value_loss(values, rewards, old_values, self.value_clip)
 
@@ -303,18 +335,17 @@ def main(
     video_folder = './lunar-recording',
     load = False
 ):
-    env = gym.make(env_name, render_mode = "rgb_array")
+    env = gym.make(env_name, render_mode = 'rgb_array')
 
     if render:
         if clear_videos:
-            from shutil import rmtree
             rmtree(video_folder, ignore_errors = True)
 
         env = gym.wrappers.RecordVideo(
             env = env,
             video_folder = video_folder,
-            name_prefix = "lunar-video",
-            episode_trigger = lambda eps_num: (eps_num % render_every_eps) == 0,
+            name_prefix = 'lunar-video',
+            episode_trigger = lambda eps_num: divisible_by(eps_num, render_every_eps),
             disable_logger = True
         )
 
@@ -352,7 +383,7 @@ def main(
     time = 0
     num_policy_updates = 0
 
-    for eps in tqdm(range(num_episodes), desc='episodes'):
+    for eps in tqdm(range(num_episodes), desc = 'episodes'):
 
         state, info = env.reset(seed = seed)
 
@@ -377,19 +408,19 @@ def main(
 
             state = next_state
 
-            if time % update_timesteps == 0:
+            if divisible_by(time, update_timesteps):
                 agent.learn(memories, aux_memories, next_state)
                 num_policy_updates += 1
                 memories.clear()
 
-                if num_policy_updates % num_policy_updates_per_aux == 0:
+                if divisible_by(num_policy_updates, num_policy_updates_per_aux):
                     agent.learn_aux(aux_memories)
                     aux_memories.clear()
 
             if done:
                 break
 
-        if eps % save_every == 0:
+        if divisible_by(eps, save_every):
             agent.save()
 
 if __name__ == '__main__':
