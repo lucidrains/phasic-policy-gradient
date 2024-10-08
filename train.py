@@ -309,7 +309,7 @@ class PPG:
 # main
 
 def main(
-    env_name = 'LunarLander-v2',
+    env_name = 'LunarLander-v3',
     num_episodes = 50000,
     max_timesteps = 500,
     actor_hidden_dim = 32,
