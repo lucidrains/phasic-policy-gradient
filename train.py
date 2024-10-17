@@ -104,7 +104,8 @@ class BroMLP(Module):
 
         self.proj_in = nn.Sequential(
             nn.Linear(dim, dim_hidden),
-            ReluSquared()
+            ReluSquared(),
+            nn.LayerNorm(dim_hidden, bias = False)
         )
 
         dim_inner = dim_hidden * expansion_factor
@@ -114,8 +115,8 @@ class BroMLP(Module):
             layer = nn.Sequential(
                 nn.Linear(dim_hidden, dim_inner),
                 nn.Dropout(dropout),
-                nn.LayerNorm(dim_inner, bias = False),
                 ReluSquared(),
+                nn.LayerNorm(dim_inner, bias = False),
                 nn.Linear(dim_inner, dim_hidden),
                 nn.LayerNorm(dim_hidden, bias = False),
             )
