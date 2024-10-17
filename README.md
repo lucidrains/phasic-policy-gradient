@@ -28,3 +28,14 @@ $ python train.py --render
     primaryClass = {cs.LG}
 }
 ```
+
+```bibtex
+@article{Nauman2024BiggerRO,
+    title   = {Bigger, Regularized, Optimistic: scaling for compute and sample-efficient continuous control},
+    author  = {Michal Nauman and Mateusz Ostaszewski and Krzysztof Jankowski and Piotr Milo's and Marek Cygan},
+    journal = {ArXiv},
+    year    = {2024},
+    volume  = {abs/2405.16158},
+    url     = {https://api.semanticscholar.org/CorpusID:270063045}
+}
+```

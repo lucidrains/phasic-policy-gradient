@@ -10,8 +10,8 @@ from tqdm import tqdm
 
 import torch
 from torch import nn
-from torch.nn import Module
 import torch.nn.functional as F
+from torch.nn import Module, ModuleList
 from torch.utils.data import Dataset, DataLoader
 from torch.distributions import Categorical
 
@@ -60,6 +60,9 @@ def create_shuffled_dataloader(data, batch_size):
 def exists(val):
     return val is not None
 
+def default(v, d):
+    return v if exists(v) else d
+
 def divisible_by(num, den):
     return (num % den) == 0
 
@@ -83,29 +86,88 @@ def init_(m):
 
     torch.nn.init.zeros_(m.bias)
 
+# "bro" mlp
+
+class BroMLP(Module):
+
+    def __init__(
+        self,
+        dim,
+        dim_out = None,
+        dim_hidden = None,
+        depth = 3,
+        dropout = 0.,
+        activation = nn.ReLU,
+        expansion_factor = 2,
+        final_norm = False
+    ):
+        super().__init__()
+        """
+        following the design of BroNet https://arxiv.org/abs/2405.16158v1
+        """
+
+        dim_out = default(dim_out, dim)
+        dim_hidden = default(dim_hidden, dim)
+
+        layers = []
+
+        self.proj_in = nn.Sequential(
+            nn.Linear(dim, dim_hidden),
+            activation()
+        )
+
+        dim_inner = dim_hidden * expansion_factor
+
+        for _ in range(depth):
+
+            layer = nn.Sequential(
+                nn.Linear(dim_hidden, dim_inner),
+                nn.Dropout(dropout),
+                nn.LayerNorm(dim_inner, bias = False),
+                activation(),
+                nn.Linear(dim_inner, dim_hidden),
+                nn.LayerNorm(dim_hidden, bias = False),
+            )
+
+            nn.init.constant_(layer[-1].weight, 1e-8)
+            layers.append(layer)
+
+        # final layer out
+
+        self.layers = ModuleList(layers)
+
+        self.final_norm = nn.LayerNorm(dim_hidden) if final_norm else nn.Identity()
+
+        self.proj_out = nn.Linear(dim_hidden, dim_out)
+
+    def forward(self, x):
+
+        x = self.proj_in(x)
+
+        for layer in self.layers:
+            x = layer(x) + x
+
+        x = self.final_norm(x)
+        return self.proj_out(x)
+
 # networks
 
 class Actor(Module):
-    def __init__(self, state_dim, hidden_dim, num_actions):
+    def __init__(self, state_dim, hidden_dim, num_actions, mlp_depth = 2):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.Tanh()
+        self.net = BroMLP(
+            state_dim,
+            dim_out = hidden_dim,
+            dim_hidden = hidden_dim * 2,
+            depth = mlp_depth
         )
 
         self.action_head = nn.Sequential(
-            nn.Linear(hidden_dim, num_actions),
+            BroMLP(hidden_dim, num_actions, depth = 1),
             nn.Softmax(dim=-1)
         )
 
-        self.value_head = nn.Linear(hidden_dim, 1)
+        self.value_head = BroMLP(hidden_dim, 1, depth = 2)
         self.apply(init_)
 
     def forward(self, x):
@@ -113,18 +175,14 @@ class Actor(Module):
         return self.action_head(hidden), self.value_head(hidden)
 
 class Critic(Module):
-    def __init__(self, state_dim, hidden_dim):
+    def __init__(self, state_dim, hidden_dim, mlp_depth = 6):  # recent paper has findings that show scaling critic is more important than scaling actor
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, 1),
+        self.net = BroMLP(
+            state_dim,
+            dim_out = 1,
+            dim_hidden = hidden_dim,
+            depth = mlp_depth
         )
-        self.apply(init_)
 
     def forward(self, x):
         return self.net(x)
@@ -314,7 +372,7 @@ class PPG:
 def main(
     env_name = 'LunarLander-v3',
     num_episodes = 50000,
-    max_timesteps = 500,
+    max_timesteps = 1000,
     actor_hidden_dim = 32,
     critic_hidden_dim = 256,
     minibatch_size = 64,
