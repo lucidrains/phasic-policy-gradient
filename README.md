@@ -39,3 +39,14 @@ $ python train.py --render
     url     = {https://api.semanticscholar.org/CorpusID:270063045}
 }
 ```
+
+```bibtex
+@article{Zhang2024ReLU2WD,
+    title   = {ReLU2 Wins: Discovering Efficient Activation Functions for Sparse LLMs},
+    author  = {Zhengyan Zhang and Yixin Song and Guanghui Yu and Xu Han and Yankai Lin and Chaojun Xiao and Chenyang Song and Zhiyuan Liu and Zeyu Mi and Maosong Sun},
+    journal = {ArXiv},
+    year    = {2024},
+    volume  = {abs/2402.03804},
+    url     = {https://api.semanticscholar.org/CorpusID:267499856}
+}
+```

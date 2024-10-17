@@ -74,19 +74,11 @@ def update_network_(loss, optimizer):
     loss.mean().backward()
     optimizer.step()
 
-def init_(m):
-    if not isinstance(m, nn.Linear):
-        return
-
-    gain = torch.nn.init.calculate_gain('tanh')
-    torch.nn.init.orthogonal_(m.weight, gain)
-
-    if not exists(m.bias):
-        return
-
-    torch.nn.init.zeros_(m.bias)
-
 # "bro" mlp
+
+class ReluSquared(Module):
+    def forward(self, x):
+        return x.sign() * F.relu(x) ** 2
 
 class BroMLP(Module):
 
@@ -97,9 +89,7 @@ class BroMLP(Module):
         dim_hidden = None,
         depth = 3,
         dropout = 0.,
-        activation = nn.ReLU,
         expansion_factor = 2,
-        final_norm = False
     ):
         super().__init__()
         """
@@ -107,13 +97,14 @@ class BroMLP(Module):
         """
 
         dim_out = default(dim_out, dim)
-        dim_hidden = default(dim_hidden, dim)
+        dim_hidden = default(dim_hidden, dim * expansion_factor)
 
         layers = []
+        mixers = []
 
         self.proj_in = nn.Sequential(
             nn.Linear(dim, dim_hidden),
-            activation()
+            ReluSquared()
         )
 
         dim_inner = dim_hidden * expansion_factor
@@ -124,19 +115,21 @@ class BroMLP(Module):
                 nn.Linear(dim_hidden, dim_inner),
                 nn.Dropout(dropout),
                 nn.LayerNorm(dim_inner, bias = False),
-                activation(),
+                ReluSquared(),
                 nn.Linear(dim_inner, dim_hidden),
                 nn.LayerNorm(dim_hidden, bias = False),
             )
 
-            nn.init.constant_(layer[-1].weight, 1e-8)
+            nn.init.constant_(layer[-1].weight, 1e-5)
             layers.append(layer)
+
+            mixer = nn.Parameter(torch.ones(dim_hidden))
+            mixers.append(mixer)
 
         # final layer out
 
         self.layers = ModuleList(layers)
-
-        self.final_norm = nn.LayerNorm(dim_hidden) if final_norm else nn.Identity()
+        self.learned_mixers = nn.ParameterList(mixers)
 
         self.proj_out = nn.Linear(dim_hidden, dim_out)
 
@@ -144,10 +137,11 @@ class BroMLP(Module):
 
         x = self.proj_in(x)
 
-        for layer in self.layers:
-            x = layer(x) + x
+        for layer, mix in zip(self.layers, self.learned_mixers):
 
-        x = self.final_norm(x)
+            branch_out = layer(x)
+            x = x * mix + branch_out
+
         return self.proj_out(x)
 
 # networks
@@ -168,7 +162,6 @@ class Actor(Module):
         )
 
         self.value_head = BroMLP(hidden_dim, 1, depth = 2)
-        self.apply(init_)
 
     def forward(self, x):
         hidden = self.net(x)
