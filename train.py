@@ -366,7 +366,7 @@ class PPG:
 def main(
     env_name = 'LunarLander-v3',
     num_episodes = 50000,
-    max_timesteps = 1000,
+    max_timesteps = 500,
     actor_hidden_dim = 32,
     critic_hidden_dim = 256,
     minibatch_size = 64,
@@ -381,7 +381,7 @@ def main(
     update_timesteps = 5000,
     num_policy_updates_per_aux = 32,
     epochs = 1,
-    epochs_aux = 4,
+    epochs_aux = 2,
     seed = None,
     render = False,
     render_every_eps = 250,
