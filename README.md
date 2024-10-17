@@ -1,5 +1,7 @@
 <img src="./lunar.gif" width="400px"></img>
 
+*1k steps*
+
 ## Phasic Policy Gradient - Pytorch
 
 An implementation of Phasic Policy Gradient, a proposed improvement on top of Proximal Policy Optimization (PPO), in Pytorch. It will be my very first project in Reinforcement Learning.
