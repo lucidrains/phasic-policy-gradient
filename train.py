@@ -15,6 +15,8 @@ from torch.nn import Module, ModuleList
 from torch.utils.data import Dataset, DataLoader
 from torch.distributions import Categorical
 
+from ema_pytorch import EMA
+
 from adam_atan2_pytorch.adam_atan2_with_wasserstein_reg import AdamAtan2
 
 import gymnasium as gym
@@ -207,10 +209,14 @@ class PPG:
         eps_clip,
         value_clip,
         regen_reg_rate,
+        ema_decay,
         save_path = './ppg.pt'
     ):
         self.actor = Actor(state_dim, actor_hidden_dim, num_actions).to(device)
         self.critic = Critic(state_dim, critic_hidden_dim).to(device)
+
+        self.ema_actor = EMA(self.actor, beta = ema_decay, include_online_model = False)
+        self.ema_critic = EMA(self.critic, beta = ema_decay, include_online_model = False)
 
         self.opt_actor = AdamAtan2(self.actor.parameters(), lr=lr, betas=betas, regen_reg_rate=regen_reg_rate)
         self.opt_critic = AdamAtan2(self.critic.parameters(), lr=lr, betas=betas, regen_reg_rate=regen_reg_rate)
@@ -314,11 +320,15 @@ class PPG:
 
                 update_network_(policy_loss, self.opt_actor)
 
+                self.ema_actor.update()
+
                 # calculate value loss and update value network separate from policy network
 
                 value_loss = clipped_value_loss(values, rewards, old_values, self.value_clip)
 
                 update_network_(value_loss, self.opt_critic)
+
+                self.ema_critic.update()
 
     def learn_aux(self, aux_memories):
         # gather states and target values into one tensor
@@ -354,12 +364,16 @@ class PPG:
 
                 update_network_(policy_loss, self.opt_aux_actor)
 
+                self.ema_actor.update()
+
                 # paper says it is important to train the value network extra during the auxiliary phase
 
                 values = self.critic(states)
                 value_loss = clipped_value_loss(values, rewards, old_values, self.value_clip)
 
                 update_network_(value_loss, self.opt_aux_critic)
+
+                self.ema_critic.update()
 
 # main
 
@@ -378,6 +392,7 @@ def main(
     value_clip = 0.4,
     beta_s = .01,
     regen_reg_rate = 1e-3,
+    ema_decay = 0.9,
     update_timesteps = 5000,
     num_policy_updates_per_aux = 32,
     epochs = 1,
@@ -425,7 +440,8 @@ def main(
         beta_s,
         eps_clip,
         value_clip,
-        regen_reg_rate
+        regen_reg_rate,
+        ema_decay,
     )
 
     if load:
@@ -446,8 +462,8 @@ def main(
             time += 1
 
             state = torch.from_numpy(state).to(device)
-            action_probs, _ = agent.actor(state)
-            value = agent.critic(state)
+            action_probs, _ = agent.ema_actor(state)
+            value = agent.ema_critic(state)
 
             dist = Categorical(action_probs)
             action = dist.sample()
