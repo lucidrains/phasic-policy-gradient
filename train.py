@@ -224,6 +224,12 @@ class PPG:
         self.opt_aux_actor = AdamAtan2(self.actor.parameters(), lr=lr, betas=betas, regen_reg_rate=regen_reg_rate)
         self.opt_aux_critic = AdamAtan2(self.critic.parameters(), lr=lr, betas=betas, regen_reg_rate=regen_reg_rate)
 
+        self.ema_actor.add_to_optimizer_post_step_hook(self.opt_actor)
+        self.ema_actor.add_to_optimizer_post_step_hook(self.opt_aux_actor)
+
+        self.ema_critic.add_to_optimizer_post_step_hook(self.opt_critic)
+        self.ema_critic.add_to_optimizer_post_step_hook(self.opt_aux_critic)
+
         self.minibatch_size = minibatch_size
 
         self.epochs = epochs
@@ -320,15 +326,11 @@ class PPG:
 
                 update_network_(policy_loss, self.opt_actor)
 
-                self.ema_actor.update()
-
                 # calculate value loss and update value network separate from policy network
 
                 value_loss = clipped_value_loss(values, rewards, old_values, self.value_clip)
 
                 update_network_(value_loss, self.opt_critic)
-
-                self.ema_critic.update()
 
     def learn_aux(self, aux_memories):
         # gather states and target values into one tensor
@@ -364,16 +366,12 @@ class PPG:
 
                 update_network_(policy_loss, self.opt_aux_actor)
 
-                self.ema_actor.update()
-
                 # paper says it is important to train the value network extra during the auxiliary phase
 
                 values = self.critic(states)
                 value_loss = clipped_value_loss(values, rewards, old_values, self.value_clip)
 
                 update_network_(value_loss, self.opt_aux_critic)
-
-                self.ema_critic.update()
 
 # main
 
