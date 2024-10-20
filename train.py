@@ -460,8 +460,8 @@ def main(
             time += 1
 
             state = torch.from_numpy(state).to(device)
-            action_probs, _ = agent.ema_actor(state)
-            value = agent.ema_critic(state)
+            action_probs, _ = agent.ema_actor.forward_eval(state)
+            value = agent.ema_critic.forward_eval(state)
 
             dist = Categorical(action_probs)
             action = dist.sample()

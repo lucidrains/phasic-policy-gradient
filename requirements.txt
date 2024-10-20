@@ -1,6 +1,6 @@
 adam-atan2-pytorch>=0.0.15
 box2d-py
-ema-pytorch>=0.7.2
+ema-pytorch>=0.7.3
 fire
 gymnasium[box2d]>=1.0.0
 moviepy>=1.0.3
