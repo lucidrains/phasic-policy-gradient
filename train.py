@@ -92,6 +92,7 @@ class nMLP(Module):
         dim_out = None,
         dim_hidden = None,
         depth = 3,
+        expansion_factor = 4
     ):
         super().__init__()
         """
@@ -103,12 +104,7 @@ class nMLP(Module):
 
         layers = []
 
-        self.proj_in = nn.Sequential(
-            nn.Linear(dim, dim_hidden),
-            ReluSquared()
-        )
-
-        dim_inner = dim_hidden * expansion_factor
+        self.proj_in = nn.Linear(dim, dim_hidden)
 
         for _ in range(depth):
 
@@ -139,7 +135,7 @@ class nMLP(Module):
 # networks
 
 class Actor(Module):
-    def __init__(self, state_dim, hidden_dim, num_actions, mlp_depth = 2):
+    def __init__(self, state_dim, hidden_dim, num_actions, mlp_depth = 3):
         super().__init__()
         self.net = nMLP(
             state_dim,
@@ -368,9 +364,9 @@ def main(
     env_name = 'LunarLander-v3',
     num_episodes = 50000,
     max_timesteps = 500,
-    actor_hidden_dim = 32,
-    critic_hidden_dim = 256,
-    minibatch_size = 64,
+    actor_hidden_dim = 64,
+    critic_hidden_dim = 128,
+    minibatch_size = 32,
     lr = 0.001,
     betas = (0.9, 0.999),
     lam = 0.95,
@@ -381,7 +377,7 @@ def main(
     regen_reg_rate = 1e-3,
     ema_decay = 0.9,
     update_timesteps = 5000,
-    num_policy_updates_per_aux = 32,
+    num_policy_updates_per_aux = 16,
     epochs = 1,
     epochs_aux = 2,
     seed = None,
