@@ -4,7 +4,7 @@ ema-pytorch>=0.7.3
 fire
 gymnasium[box2d]>=1.0.0
 moviepy>=1.0.3
-nGPT-pytorch>=0.1.23
+nGPT-pytorch>=0.1.22
 numpy==1.26.4
 torch>=2.2
 tqdm
