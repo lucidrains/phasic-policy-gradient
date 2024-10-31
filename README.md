@@ -32,10 +32,34 @@ $ python train.py --render
 ```
 
 ```bibtex
-@inproceedings{Loshchilov2024nGPTNT,
-    title   = {nGPT: Normalized Transformer with Representation Learning on the Hypersphere},
-    author  = {Ilya Loshchilov and Cheng-Ping Hsieh and Simeng Sun and Boris Ginsburg},
+@article{Nauman2024BiggerRO,
+    title   = {Bigger, Regularized, Optimistic: scaling for compute and sample-efficient continuous control},
+    author  = {Michal Nauman and Mateusz Ostaszewski and Krzysztof Jankowski and Piotr Milo's and Marek Cygan},
+    journal = {ArXiv},
     year    = {2024},
-    url     = {https://api.semanticscholar.org/CorpusID:273026160}
+    volume  = {abs/2405.16158},
+    url     = {https://api.semanticscholar.org/CorpusID:270063045}
+}
+```
+
+```bibtex
+@article{Zhang2024ReLU2WD,
+    title   = {ReLU2 Wins: Discovering Efficient Activation Functions for Sparse LLMs},
+    author  = {Zhengyan Zhang and Yixin Song and Guanghui Yu and Xu Han and Yankai Lin and Chaojun Xiao and Chenyang Song and Zhiyuan Liu and Zeyu Mi and Maosong Sun},
+    journal = {ArXiv},
+    year    = {2024},
+    volume  = {abs/2402.03804},
+    url     = {https://api.semanticscholar.org/CorpusID:267499856}
+}
+```
+
+```bibtex
+@article{Shleifer2021NormFormerIT,
+    title   = {NormFormer: Improved Transformer Pretraining with Extra Normalization},
+    author  = {Sam Shleifer and Jason Weston and Myle Ott},
+    journal = {ArXiv},
+    year    = {2021},
+    volume  = {abs/2110.09456},
+    url     = {https://api.semanticscholar.org/CorpusID:239016890}
 }
 ```

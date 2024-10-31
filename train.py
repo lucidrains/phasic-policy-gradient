@@ -15,8 +15,6 @@ from torch.nn import Module, ModuleList
 from torch.utils.data import Dataset, DataLoader
 from torch.distributions import Categorical
 
-from nGPT_pytorch import Residual, FeedForward
-
 from ema_pytorch import EMA
 
 from adam_atan2_pytorch.adam_atan2_with_wasserstein_reg import AdamAtan2
@@ -78,13 +76,13 @@ def update_network_(loss, optimizer):
     loss.mean().backward()
     optimizer.step()
 
-# nMLP
+# "bro" mlp
 
 class ReluSquared(Module):
     def forward(self, x):
         return x.sign() * F.relu(x) ** 2
 
-class nMLP(Module):
+class BroMLP(Module):
 
     def __init__(
         self,
@@ -92,6 +90,8 @@ class nMLP(Module):
         dim_out = None,
         dim_hidden = None,
         depth = 3,
+        dropout = 0.,
+        expansion_factor = 2,
     ):
         super().__init__()
         """
@@ -102,27 +102,37 @@ class nMLP(Module):
         dim_hidden = default(dim_hidden, dim * expansion_factor)
 
         layers = []
+        mixers = []
 
         self.proj_in = nn.Sequential(
             nn.Linear(dim, dim_hidden),
-            ReluSquared()
+            ReluSquared(),
+            nn.LayerNorm(dim_hidden, bias = False)
         )
 
         dim_inner = dim_hidden * expansion_factor
 
         for _ in range(depth):
 
-            layer = Residual(
-                FeedForward(dim_hidden),
-                dim = dim_hidden,
-                init = 1. / depth
+            layer = nn.Sequential(
+                nn.Linear(dim_hidden, dim_inner),
+                nn.Dropout(dropout),
+                ReluSquared(),
+                nn.LayerNorm(dim_inner, bias = False),
+                nn.Linear(dim_inner, dim_hidden),
+                nn.LayerNorm(dim_hidden, bias = False),
             )
 
+            nn.init.constant_(layer[-1].weight, 1e-5)
             layers.append(layer)
+
+            mixer = nn.Parameter(torch.ones(dim_hidden))
+            mixers.append(mixer)
 
         # final layer out
 
         self.layers = ModuleList(layers)
+        self.learned_mixers = nn.ParameterList(mixers)
 
         self.proj_out = nn.Linear(dim_hidden, dim_out)
 
@@ -130,9 +140,10 @@ class nMLP(Module):
 
         x = self.proj_in(x)
 
-        for layer in self.layers:
+        for layer, mix in zip(self.layers, self.learned_mixers):
 
-            x = layer(x)
+            branch_out = layer(x)
+            x = x * mix + branch_out
 
         return self.proj_out(x)
 
@@ -141,7 +152,7 @@ class nMLP(Module):
 class Actor(Module):
     def __init__(self, state_dim, hidden_dim, num_actions, mlp_depth = 2):
         super().__init__()
-        self.net = nMLP(
+        self.net = BroMLP(
             state_dim,
             dim_out = hidden_dim,
             dim_hidden = hidden_dim * 2,
@@ -149,11 +160,11 @@ class Actor(Module):
         )
 
         self.action_head = nn.Sequential(
-            nMLP(hidden_dim, num_actions, depth = 1),
+            BroMLP(hidden_dim, num_actions, depth = 1),
             nn.Softmax(dim=-1)
         )
 
-        self.value_head = nMLP(hidden_dim, 1, depth = 2)
+        self.value_head = BroMLP(hidden_dim, 1, depth = 2)
 
     def forward(self, x):
         hidden = self.net(x)
@@ -162,7 +173,7 @@ class Actor(Module):
 class Critic(Module):
     def __init__(self, state_dim, hidden_dim, mlp_depth = 6):  # recent paper has findings that show scaling critic is more important than scaling actor
         super().__init__()
-        self.net = nMLP(
+        self.net = BroMLP(
             state_dim,
             dim_out = 1,
             dim_hidden = hidden_dim,
@@ -371,7 +382,7 @@ def main(
     actor_hidden_dim = 32,
     critic_hidden_dim = 256,
     minibatch_size = 64,
-    lr = 0.001,
+    lr = 0.0005,
     betas = (0.9, 0.999),
     lam = 0.95,
     gamma = 0.99,
