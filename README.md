@@ -12,6 +12,12 @@ An implementation of Phasic Policy Gradient, a proposed improvement on top of Pr
 $ pip install -r requirements.txt
 ```
 
+You may need to install `swig`
+
+```bash
+$ apt install swig
+```
+
 ## Use
 
 ```bash
@@ -61,5 +67,14 @@ $ python train.py --render
     year    = {2021},
     volume  = {abs/2110.09456},
     url     = {https://api.semanticscholar.org/CorpusID:239016890}
+}
+```
+
+```bibtex
+@inproceedings{Lee2024SimBaSB,
+    title  = {SimBa: Simplicity Bias for Scaling Up Parameters in Deep Reinforcement Learning},
+    author = {Hojoon Lee and Dongyoon Hwang and Donghu Kim and Hyunseung Kim and Jun Jet Tai and Kaushik Subramanian and Peter R. Wurman and Jaegul Choo and Peter Stone and Takuma Seno},
+    year   = {2024},
+    url    = {https://api.semanticscholar.org/CorpusID:273346233}
 }
 ```

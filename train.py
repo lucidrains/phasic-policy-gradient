@@ -9,11 +9,13 @@ import numpy as np
 from tqdm import tqdm
 
 import torch
-from torch import nn
+from torch import nn, tensor
 import torch.nn.functional as F
 from torch.nn import Module, ModuleList
 from torch.utils.data import Dataset, DataLoader
 from torch.distributions import Categorical
+
+from einops import reduce
 
 from ema_pytorch import EMA
 
@@ -76,6 +78,56 @@ def update_network_(loss, optimizer):
     loss.mean().backward()
     optimizer.step()
 
+# RSM Norm (not to be confused with RMSNorm from transformers)
+# this was proposed by SimBa https://arxiv.org/abs/2410.09754
+# experiments show this to outperform other types of normalization
+
+class RSMNorm(Module):
+    def __init__(
+        self,
+        dim,
+        eps = 1e-5
+    ):
+        # equation (3) in https://arxiv.org/abs/2410.09754
+        super().__init__()
+        self.dim = dim
+        self.eps = 1e-5
+
+        self.register_buffer('step', tensor(1))
+        self.register_buffer('running_mean', torch.zeros(dim))
+        self.register_buffer('running_variance', torch.ones(dim))
+
+    def forward(
+        self,
+        x
+    ):
+        assert x.shape[-1] == self.dim, f'expected feature dimension of {self.dim} but received {x.shape[-1]}'
+
+        time = self.step.item()
+        mean = self.running_mean
+        variance = self.running_variance
+
+        normed = (x - mean) / variance.sqrt().clamp(min = self.eps)
+
+        if not self.training:
+            return normed
+
+        # update running mean and variance
+
+        with torch.no_grad():
+
+            new_obs_mean = reduce(x, '... d -> d', 'mean')
+            delta = new_obs_mean - mean
+
+            new_mean = mean + delta / time
+            new_variance = (time - 1) / time * (variance + (delta ** 2) / time)
+
+            self.step.add_(1)
+            self.running_mean.copy_(new_mean)
+            self.running_variance.copy_(new_variance)
+
+        return normed
+
 # "bro" mlp
 
 class ReluSquared(Module):
@@ -92,11 +144,14 @@ class BroMLP(Module):
         depth = 3,
         dropout = 0.,
         expansion_factor = 2,
+        rsmnorm_input = True  # use the RSMNorm for inputs proposed by KAIST + SonyAI
     ):
         super().__init__()
         """
         following the design of BroNet https://arxiv.org/abs/2405.16158v1
         """
+
+        self.rsmnorm = RSMNorm(dim) if rsmnorm_input else nn.Identity()
 
         dim_out = default(dim_out, dim)
         dim_hidden = default(dim_hidden, dim * expansion_factor)
@@ -137,6 +192,8 @@ class BroMLP(Module):
         self.proj_out = nn.Linear(dim_hidden, dim_out)
 
     def forward(self, x):
+
+        x = self.rsmnorm(x)
 
         x = self.proj_in(x)
 
@@ -270,7 +327,7 @@ class PPG:
             values
         ) = zip(*memories)
 
-        actions = [torch.tensor(action) for action in actions]
+        actions = [tensor(action) for action in actions]
         masks = [(1. - float(done)) for done in dones]
 
         # calculate generalized advantage estimate
@@ -295,7 +352,7 @@ class PPG:
         old_values = to_torch_tensor(values[:-1])
         old_log_probs = to_torch_tensor(old_log_probs)
 
-        rewards = torch.tensor(returns).float().to(device)
+        rewards = tensor(returns).float().to(device)
 
         # store state and target values to auxiliary memory buffer for later training
 
