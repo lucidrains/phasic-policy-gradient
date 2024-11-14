@@ -144,14 +144,11 @@ class BroMLP(Module):
         depth = 3,
         dropout = 0.,
         expansion_factor = 2,
-        rsmnorm_input = True  # use the RSMNorm for inputs proposed by KAIST + SonyAI
     ):
         super().__init__()
         """
         following the design of BroNet https://arxiv.org/abs/2405.16158v1
         """
-
-        self.rsmnorm = RSMNorm(dim) if rsmnorm_input else nn.Identity()
 
         dim_out = default(dim_out, dim)
         dim_hidden = default(dim_hidden, dim * expansion_factor)
@@ -193,8 +190,6 @@ class BroMLP(Module):
 
     def forward(self, x):
 
-        x = self.rsmnorm(x)
-
         x = self.proj_in(x)
 
         for layer, mix in zip(self.layers, self.learned_mixers):
@@ -207,8 +202,17 @@ class BroMLP(Module):
 # networks
 
 class Actor(Module):
-    def __init__(self, state_dim, hidden_dim, num_actions, mlp_depth = 2):
+    def __init__(
+        self,
+        state_dim,
+        hidden_dim,
+        num_actions,
+        mlp_depth = 2,
+        rsmnorm_input = True  # use the RSMNorm for inputs proposed by KAIST + SonyAI
+    ):
         super().__init__()
+        self.rsmnorm = RSMNorm(state_dim) if rsmnorm_input else nn.Identity()
+
         self.net = BroMLP(
             state_dim,
             dim_out = hidden_dim,
@@ -224,12 +228,21 @@ class Actor(Module):
         self.value_head = BroMLP(hidden_dim, 1, depth = 2)
 
     def forward(self, x):
+        x = self.rsmnorm(x)
         hidden = self.net(x)
         return self.action_head(hidden), self.value_head(hidden)
 
 class Critic(Module):
-    def __init__(self, state_dim, hidden_dim, mlp_depth = 6):  # recent paper has findings that show scaling critic is more important than scaling actor
+    def __init__(
+        self,
+        state_dim,
+        hidden_dim,
+        mlp_depth = 6, # recent paper has findings that show scaling critic is more important than scaling actor
+        rsmnorm_input = True
+    ):
         super().__init__()
+        self.rsmnorm = RSMNorm(state_dim) if rsmnorm_input else nn.Identity()
+
         self.net = BroMLP(
             state_dim,
             dim_out = 1,
@@ -238,6 +251,7 @@ class Critic(Module):
         )
 
     def forward(self, x):
+        x = self.rsmnorm(x)
         return self.net(x)
 
 # agent
