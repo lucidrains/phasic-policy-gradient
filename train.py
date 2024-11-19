@@ -128,18 +128,17 @@ class RSMNorm(Module):
 
         return normed
 
-# "bro" mlp
+# SimBa - Kaist + SonyAI
 
 class ReluSquared(Module):
     def forward(self, x):
         return x.sign() * F.relu(x) ** 2
 
-class BroMLP(Module):
+class SimBa(Module):
 
     def __init__(
         self,
         dim,
-        dim_out = None,
         dim_hidden = None,
         depth = 3,
         dropout = 0.,
@@ -147,57 +146,56 @@ class BroMLP(Module):
     ):
         super().__init__()
         """
-        following the design of BroNet https://arxiv.org/abs/2405.16158v1
+        following the design of SimBa https://arxiv.org/abs/2410.09754v1
         """
 
-        dim_out = default(dim_out, dim)
         dim_hidden = default(dim_hidden, dim * expansion_factor)
 
         layers = []
-        mixers = []
 
-        self.proj_in = nn.Sequential(
-            nn.Linear(dim, dim_hidden),
-            ReluSquared(),
-            nn.LayerNorm(dim_hidden, bias = False)
-        )
+        residual_scales = []
+        layerscales = []
+
+        self.proj_in = nn.Linear(dim, dim_hidden)
 
         dim_inner = dim_hidden * expansion_factor
 
         for _ in range(depth):
 
             layer = nn.Sequential(
-                nn.Linear(dim_hidden, dim_inner),
-                nn.Dropout(dropout),
-                ReluSquared(),
-                nn.LayerNorm(dim_inner, bias = False),
-                nn.Linear(dim_inner, dim_hidden),
                 nn.LayerNorm(dim_hidden, bias = False),
+                nn.Linear(dim_hidden, dim_inner),
+                ReluSquared(),
+                nn.Linear(dim_inner, dim_hidden),
+                nn.Dropout(dropout),
             )
 
-            nn.init.constant_(layer[-1].weight, 1e-5)
             layers.append(layer)
 
-            mixer = nn.Parameter(torch.ones(dim_hidden))
-            mixers.append(mixer)
+            layerscale = nn.Parameter(torch.zeros(dim_hidden))
+            layerscales.append(layerscale)
+
+            residual_scale = nn.Parameter(torch.ones(dim_hidden))
+            residual_scales.append(residual_scale)
 
         # final layer out
 
         self.layers = ModuleList(layers)
-        self.learned_mixers = nn.ParameterList(mixers)
+        self.residual_scales = nn.ParameterList(residual_scales)
+        self.layerscales = nn.ParameterList(layerscales)
 
-        self.proj_out = nn.Linear(dim_hidden, dim_out)
+        self.final_norm = nn.LayerNorm(dim_hidden, bias = False)
 
     def forward(self, x):
 
         x = self.proj_in(x)
 
-        for layer, mix in zip(self.layers, self.learned_mixers):
+        for layer, residual_scale, layerscale in zip(self.layers, self.residual_scales, self.layerscales):
 
             branch_out = layer(x)
-            x = x * mix + branch_out
+            x = x * residual_scale + branch_out * layerscale
 
-        return self.proj_out(x)
+        return self.final_norm(x)
 
 # networks
 
@@ -208,29 +206,39 @@ class Actor(Module):
         hidden_dim,
         num_actions,
         mlp_depth = 2,
+        dropout = 0.1,
         rsmnorm_input = True  # use the RSMNorm for inputs proposed by KAIST + SonyAI
     ):
         super().__init__()
         self.rsmnorm = RSMNorm(state_dim) if rsmnorm_input else nn.Identity()
 
-        self.net = BroMLP(
+        self.net = SimBa(
             state_dim,
-            dim_out = hidden_dim,
             dim_hidden = hidden_dim * 2,
-            depth = mlp_depth
+            depth = mlp_depth,
+            dropout = dropout
         )
 
         self.action_head = nn.Sequential(
-            BroMLP(hidden_dim, num_actions, depth = 1),
-            nn.Softmax(dim=-1)
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            ReluSquared(),
+            nn.Linear(hidden_dim, num_actions)
         )
 
-        self.value_head = BroMLP(hidden_dim, 1, depth = 2)
+        self.value_head = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            ReluSquared(),
+            nn.Linear(hidden_dim, 1)
+        )
 
     def forward(self, x):
         x = self.rsmnorm(x)
         hidden = self.net(x)
-        return self.action_head(hidden), self.value_head(hidden)
+
+        action_probs = self.action_head(hidden).softmax(dim = -1)
+        values = self.value_head(hidden)
+
+        return action_probs, values
 
 class Critic(Module):
     def __init__(
@@ -238,21 +246,26 @@ class Critic(Module):
         state_dim,
         hidden_dim,
         mlp_depth = 6, # recent paper has findings that show scaling critic is more important than scaling actor
+        dropout = 0.1,
         rsmnorm_input = True
     ):
         super().__init__()
         self.rsmnorm = RSMNorm(state_dim) if rsmnorm_input else nn.Identity()
 
-        self.net = BroMLP(
+        self.net = SimBa(
             state_dim,
-            dim_out = 1,
             dim_hidden = hidden_dim,
-            depth = mlp_depth
+            depth = mlp_depth,
+            dropout = dropout
         )
+
+        self.value_head = nn.Linear(hidden_dim, 1)
 
     def forward(self, x):
         x = self.rsmnorm(x)
-        return self.net(x)
+        hidden = self.net(x)
+        value = self.value_head(hidden)
+        return value
 
 # agent
 
