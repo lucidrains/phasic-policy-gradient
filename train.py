@@ -305,14 +305,8 @@ class PPG:
         self.opt_actor = AdamAtan2(self.actor.parameters(), lr=lr, betas=betas, regen_reg_rate=regen_reg_rate)
         self.opt_critic = AdamAtan2(self.critic.parameters(), lr=lr, betas=betas, regen_reg_rate=regen_reg_rate)
 
-        self.opt_aux_actor = AdamAtan2(self.actor.parameters(), lr=lr, betas=betas, regen_reg_rate=regen_reg_rate)
-        self.opt_aux_critic = AdamAtan2(self.critic.parameters(), lr=lr, betas=betas, regen_reg_rate=regen_reg_rate)
-
         self.ema_actor.add_to_optimizer_post_step_hook(self.opt_actor)
-        self.ema_actor.add_to_optimizer_post_step_hook(self.opt_aux_actor)
-
         self.ema_critic.add_to_optimizer_post_step_hook(self.opt_critic)
-        self.ema_critic.add_to_optimizer_post_step_hook(self.opt_aux_critic)
 
         self.minibatch_size = minibatch_size
 
@@ -448,14 +442,14 @@ class PPG:
                 loss_kl = F.kl_div(action_logprobs, old_action_probs, reduction='batchmean')
                 policy_loss = aux_loss + loss_kl
 
-                update_network_(policy_loss, self.opt_aux_actor)
+                update_network_(policy_loss, self.opt_actor)
 
                 # paper says it is important to train the value network extra during the auxiliary phase
 
                 values = self.critic(states)
                 value_loss = clipped_value_loss(values, rewards, old_values, self.value_clip)
 
-                update_network_(value_loss, self.opt_aux_critic)
+                update_network_(value_loss, self.opt_critic)
 
 # main
 
