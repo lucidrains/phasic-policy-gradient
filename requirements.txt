@@ -6,5 +6,5 @@ fire
 gymnasium[box2d]>=1.0.0
 moviepy>=1.0.3
 numpy==1.26.4
-torch>=2.2
+torch>=2.5
 tqdm

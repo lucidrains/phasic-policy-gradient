@@ -163,7 +163,7 @@ class SimBa(Module):
         for _ in range(depth):
 
             layer = nn.Sequential(
-                nn.LayerNorm(dim_hidden, bias = False),
+                nn.RMSNorm(dim_hidden),
                 nn.Linear(dim_hidden, dim_inner),
                 ReluSquared(),
                 nn.Linear(dim_inner, dim_hidden),
@@ -184,7 +184,7 @@ class SimBa(Module):
         self.residual_scales = nn.ParameterList(residual_scales)
         self.layerscales = nn.ParameterList(layerscales)
 
-        self.final_norm = nn.LayerNorm(dim_hidden, bias = False)
+        self.final_norm = nn.RMSNorm(dim_hidden)
 
     def forward(self, x):
 
@@ -299,8 +299,8 @@ class PPG:
         self.actor = Actor(state_dim, actor_hidden_dim, num_actions).to(device)
         self.critic = Critic(state_dim, critic_hidden_dim).to(device)
 
-        self.ema_actor = EMA(self.actor, beta = ema_decay, include_online_model = False)
-        self.ema_critic = EMA(self.critic, beta = ema_decay, include_online_model = False)
+        self.ema_actor = EMA(self.actor, beta = ema_decay, include_online_model = False, update_model_with_ema_every = 1000)
+        self.ema_critic = EMA(self.critic, beta = ema_decay, include_online_model = False, update_model_with_ema_every = 1000)
 
         self.opt_actor = AdamAtan2(self.actor.parameters(), lr=lr, betas=betas, regen_reg_rate=regen_reg_rate)
         self.opt_critic = AdamAtan2(self.critic.parameters(), lr=lr, betas=betas, regen_reg_rate=regen_reg_rate)
@@ -457,10 +457,10 @@ def main(
     env_name = 'LunarLander-v3',
     num_episodes = 50000,
     max_timesteps = 500,
-    actor_hidden_dim = 32,
+    actor_hidden_dim = 64,
     critic_hidden_dim = 256,
     minibatch_size = 64,
-    lr = 0.0005,
+    lr = 0.0008,
     betas = (0.9, 0.999),
     lam = 0.95,
     gamma = 0.99,
@@ -470,9 +470,9 @@ def main(
     regen_reg_rate = 1e-3,
     ema_decay = 0.9,
     update_timesteps = 5000,
-    num_policy_updates_per_aux = 32,
-    epochs = 1,
-    epochs_aux = 2,
+    num_policy_updates_per_aux = 500,
+    epochs = 2,
+    epochs_aux = 4,
     seed = None,
     render = False,
     render_every_eps = 250,
