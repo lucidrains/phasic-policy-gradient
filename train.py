@@ -19,7 +19,7 @@ from einops import reduce
 
 from ema_pytorch import EMA
 
-from adam_atan2_pytorch.adam_atan2_with_wasserstein_reg import AdamAtan2
+from adam_atan2_pytorch.adopt_atan2 import AdoptAtan2
 
 import gymnasium as gym
 
@@ -292,7 +292,6 @@ class PPG:
         beta_s,
         eps_clip,
         value_clip,
-        regen_reg_rate,
         ema_decay,
         save_path = './ppg.pt'
     ):
@@ -302,8 +301,8 @@ class PPG:
         self.ema_actor = EMA(self.actor, beta = ema_decay, include_online_model = False, update_model_with_ema_every = 1000)
         self.ema_critic = EMA(self.critic, beta = ema_decay, include_online_model = False, update_model_with_ema_every = 1000)
 
-        self.opt_actor = AdamAtan2(self.actor.parameters(), lr=lr, betas=betas, regen_reg_rate=regen_reg_rate)
-        self.opt_critic = AdamAtan2(self.critic.parameters(), lr=lr, betas=betas, regen_reg_rate=regen_reg_rate)
+        self.opt_actor = AdoptAtan2(self.actor.parameters(), lr=lr, betas=betas)
+        self.opt_critic = AdoptAtan2(self.critic.parameters(), lr=lr, betas=betas)
 
         self.ema_actor.add_to_optimizer_post_step_hook(self.opt_actor)
         self.ema_critic.add_to_optimizer_post_step_hook(self.opt_critic)
@@ -467,7 +466,6 @@ def main(
     eps_clip = 0.2,
     value_clip = 0.4,
     beta_s = .01,
-    regen_reg_rate = 1e-3,
     ema_decay = 0.9,
     update_timesteps = 5000,
     num_policy_updates_per_aux = 500,
@@ -516,7 +514,6 @@ def main(
         beta_s,
         eps_clip,
         value_clip,
-        regen_reg_rate,
         ema_decay,
     )
 
