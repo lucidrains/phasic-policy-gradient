@@ -1,4 +1,4 @@
-adam-atan2-pytorch>=0.1.12
+adam-atan2-pytorch>=0.1.16
 box2d-py
 einops>=0.8.0
 ema-pytorch>=0.7.3
@@ -6,5 +6,5 @@ fire
 gymnasium[box2d]>=1.0.0
 moviepy>=1.0.3
 numpy==1.26.4
-torch>=2.5
+torch>=2.4
 tqdm
