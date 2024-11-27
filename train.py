@@ -291,6 +291,7 @@ class PPG:
         gamma,
         beta_s,
         regen_reg_rate,
+        cautious_factor,
         eps_clip,
         value_clip,
         ema_decay,
@@ -302,8 +303,8 @@ class PPG:
         self.ema_actor = EMA(self.actor, beta = ema_decay, include_online_model = False, update_model_with_ema_every = 1000)
         self.ema_critic = EMA(self.critic, beta = ema_decay, include_online_model = False, update_model_with_ema_every = 1000)
 
-        self.opt_actor = AdoptAtan2(self.actor.parameters(), lr = lr, betas = betas, regen_reg_rate = regen_reg_rate)
-        self.opt_critic = AdoptAtan2(self.critic.parameters(), lr = lr, betas = betas, regen_reg_rate = regen_reg_rate)
+        self.opt_actor = AdoptAtan2(self.actor.parameters(), lr = lr, betas = betas, regen_reg_rate = regen_reg_rate, cautious_factor = cautious_factor)
+        self.opt_critic = AdoptAtan2(self.critic.parameters(), lr = lr, betas = betas, regen_reg_rate = regen_reg_rate, cautious_factor = cautious_factor)
 
         self.ema_actor.add_to_optimizer_post_step_hook(self.opt_actor)
         self.ema_critic.add_to_optimizer_post_step_hook(self.opt_critic)
@@ -468,6 +469,7 @@ def main(
     value_clip = 0.4,
     beta_s = .01,
     regen_reg_rate = 1e-4,
+    cautious_factor = 0.1,
     ema_decay = 0.9,
     update_timesteps = 5000,
     num_policy_updates_per_aux = 500,
@@ -515,6 +517,7 @@ def main(
         gamma,
         beta_s,
         regen_reg_rate,
+        cautious_factor,
         eps_clip,
         value_clip,
         ema_decay,

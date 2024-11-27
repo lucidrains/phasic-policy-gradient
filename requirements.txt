@@ -1,4 +1,4 @@
-adam-atan2-pytorch>=0.1.16
+adam-atan2-pytorch>=0.1.18
 box2d-py
 einops>=0.8.0
 ema-pytorch>=0.7.3
