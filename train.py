@@ -267,6 +267,32 @@ class Critic(Module):
         value = self.value_head(hidden)
         return value
 
+# spectral entropy loss
+# https://openreview.net/forum?id=07N9jCfIE4
+
+
+def log(t, eps = 1e-20):
+    return t.clamp(min = eps).log()
+
+def entropy(prob):
+    return (-prob * log(prob)).sum()
+
+def model_spectral_entropy_loss(
+    model: Module
+):
+    loss = tensor(0.).requires_grad_()
+
+    for parameter in model.parameters():
+        if parameter.ndim != 2:
+            continue
+
+        singular_values = torch.linalg.svdvals(parameter)
+        spectral_prob = singular_values.softmax(dim = -1)
+        spectral_entropy = entropy(spectral_prob)
+        loss = loss + spectral_entropy
+
+    return loss
+
 # agent
 
 def clipped_value_loss(values, rewards, old_values, clip):
@@ -291,6 +317,8 @@ class PPG:
         gamma,
         beta_s,
         regen_reg_rate,
+        spectral_entropy_reg,
+        spectral_entropy_reg_weight,
         cautious_factor,
         eps_clip,
         value_clip,
@@ -320,6 +348,9 @@ class PPG:
 
         self.eps_clip = eps_clip
         self.value_clip = value_clip
+
+        self.spectral_entropy_reg = spectral_entropy_reg
+        self.spectral_entropy_reg_weight = spectral_entropy_reg_weight
 
         self.save_path = Path(save_path)
 
@@ -403,11 +434,17 @@ class PPG:
                 surr2 = ratios.clamp(1 - self.eps_clip, 1 + self.eps_clip) * advantages
                 policy_loss = - torch.min(surr1, surr2) - self.beta_s * entropy
 
+                if self.spectral_entropy_reg:
+                    policy_loss = policy_loss + model_spectral_entropy_loss(self.actor) * self.spectral_entropy_reg_weight
+
                 update_network_(policy_loss, self.opt_actor)
 
                 # calculate value loss and update value network separate from policy network
 
                 value_loss = clipped_value_loss(values, rewards, old_values, self.value_clip)
+
+                if self.spectral_entropy_reg:
+                    value_loss = value_loss + model_spectral_entropy_loss(self.critic) * self.spectral_entropy_reg_weight
 
                 update_network_(value_loss, self.opt_critic)
 
@@ -469,6 +506,8 @@ def main(
     value_clip = 0.4,
     beta_s = .01,
     regen_reg_rate = 1e-4,
+    spectral_entropy_reg = False,
+    spectral_entropy_reg_weight = 0.025,
     cautious_factor = 0.1,
     ema_decay = 0.9,
     update_timesteps = 5000,
@@ -517,6 +556,8 @@ def main(
         gamma,
         beta_s,
         regen_reg_rate,
+        spectral_entropy_reg,
+        spectral_entropy_reg_weight,
         cautious_factor,
         eps_clip,
         value_clip,
