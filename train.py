@@ -318,6 +318,7 @@ class PPG:
         beta_s,
         regen_reg_rate,
         spectral_entropy_reg,
+        apply_spectral_entropy_every,
         spectral_entropy_reg_weight,
         cautious_factor,
         eps_clip,
@@ -350,6 +351,7 @@ class PPG:
         self.value_clip = value_clip
 
         self.spectral_entropy_reg = spectral_entropy_reg
+        self.apply_spectral_entropy_every = apply_spectral_entropy_every
         self.spectral_entropy_reg_weight = spectral_entropy_reg_weight
 
         self.save_path = Path(save_path)
@@ -419,7 +421,8 @@ class PPG:
         # policy phase training, similar to original PPO
 
         for _ in range(self.epochs):
-            for states, actions, old_log_probs, rewards, old_values in dl:
+            for i, (states, actions, old_log_probs, rewards, old_values) in enumerate(dl):
+
                 action_probs, _ = self.actor(states)
                 values = self.critic(states)
                 dist = Categorical(action_probs)
@@ -434,7 +437,7 @@ class PPG:
                 surr2 = ratios.clamp(1 - self.eps_clip, 1 + self.eps_clip) * advantages
                 policy_loss = - torch.min(surr1, surr2) - self.beta_s * entropy
 
-                if self.spectral_entropy_reg:
+                if self.spectral_entropy_reg and divisible_by(i, self.apply_spectral_entropy_every):
                     policy_loss = policy_loss + model_spectral_entropy_loss(self.actor) * self.spectral_entropy_reg_weight
 
                 update_network_(policy_loss, self.opt_actor)
@@ -443,7 +446,7 @@ class PPG:
 
                 value_loss = clipped_value_loss(values, rewards, old_values, self.value_clip)
 
-                if self.spectral_entropy_reg:
+                if self.spectral_entropy_reg and divisible_by(i, self.apply_spectral_entropy_every):
                     value_loss = value_loss + model_spectral_entropy_loss(self.critic) * self.spectral_entropy_reg_weight
 
                 update_network_(value_loss, self.opt_critic)
@@ -507,6 +510,7 @@ def main(
     beta_s = .01,
     regen_reg_rate = 1e-4,
     spectral_entropy_reg = False,
+    apply_spectral_entropy_every = 4,
     spectral_entropy_reg_weight = 0.025,
     cautious_factor = 0.1,
     ema_decay = 0.9,
@@ -557,6 +561,7 @@ def main(
         beta_s,
         regen_reg_rate,
         spectral_entropy_reg,
+        apply_spectral_entropy_every,
         spectral_entropy_reg_weight,
         cautious_factor,
         eps_clip,
