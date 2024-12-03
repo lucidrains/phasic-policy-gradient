@@ -283,8 +283,11 @@ def model_spectral_entropy_loss(
     loss = tensor(0.).requires_grad_()
 
     for parameter in model.parameters():
-        if parameter.ndim != 2:
+        if parameter.ndim < 2:
             continue
+
+        *_, row, col = parameter.shape
+        parameter = parameter.reshape(-1, row, col)
 
         singular_values = torch.linalg.svdvals(parameter)
         spectral_prob = singular_values.softmax(dim = -1)
