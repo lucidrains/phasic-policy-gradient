@@ -4,6 +4,7 @@ import fire
 from pathlib import Path
 from shutil import rmtree
 from collections import deque, namedtuple
+from random import randrange
 
 import numpy as np
 from tqdm import tqdm
@@ -15,7 +16,7 @@ from torch.nn import Module, ModuleList
 from torch.utils.data import Dataset, DataLoader
 from torch.distributions import Categorical
 
-from einops import reduce
+from einops import pack, unpack, reduce, repeat, einsum, rearrange
 
 from ema_pytorch import EMA
 
@@ -77,6 +78,79 @@ def update_network_(loss, optimizer):
     optimizer.zero_grad()
     loss.mean().backward()
     optimizer.step()
+
+# hyper connection residual streams
+
+class HyperConnections(Module):
+    def __init__(
+        self,
+        dim,
+        *,
+        num_residual_streams,
+        layer_index = None,
+        tanh = True,
+        **kwargs
+    ):
+        """
+        https://arxiv.org/abs/2409.19606
+        Appendix J - Algorithm 2, Dynamic only
+        """
+        super().__init__()
+
+        self.act = nn.Tanh() if tanh else nn.Identity()
+
+        self.norm = nn.RMSNorm(dim)
+
+        self.num_residual_streams = num_residual_streams
+        layer_index = default(layer_index, randrange(num_residual_streams)) # just choose one random residual stream if layer index not given
+
+        self.static_beta = nn.Parameter(torch.ones(num_residual_streams))
+
+        init_alpha0 = torch.zeros((num_residual_streams, 1))
+        init_alpha0[layer_index % num_residual_streams, 0] = 1.
+
+        self.static_alpha = nn.Parameter(torch.cat([init_alpha0, torch.eye(num_residual_streams)], dim = 1))
+
+        self.dynamic_alpha_fn = nn.Parameter(torch.zeros(dim, num_residual_streams + 1))
+        self.dynamic_alpha_scale = nn.Parameter(torch.ones(()) * 1e-2)
+        self.dynamic_beta_fn = nn.Parameter(torch.zeros(dim))
+        self.dynamic_beta_scale = nn.Parameter(torch.ones(()) * 1e-2)
+
+    def prepare_with_inverse(self, residuals):
+        branch_input, residuals, residual_kwargs = self.prepare(residuals)
+
+        def inverse(branch_out):
+            return self(branch_out, residuals, **residual_kwargs)
+
+        return branch_input, inverse
+
+    def prepare(self, residuals):
+
+        residuals = rearrange(residuals, '(b s) ... d -> b ... s d', s = self.num_residual_streams)
+
+        normed = self.norm(residuals)
+
+        wc_weight = self.act(normed @ self.dynamic_alpha_fn)
+        dynamic_alpha = wc_weight * self.dynamic_alpha_scale
+        alpha = dynamic_alpha + self.static_alpha
+
+        dc_weight = self.act(normed @ self.dynamic_beta_fn)
+        dynamic_beta = dc_weight * self.dynamic_beta_scale
+        beta = dynamic_beta + self.static_beta
+
+        # width connection
+
+        mix_h = einsum(alpha, residuals, '... s t, ... s d -> ... t d')
+
+        branch_input, residuals = mix_h[..., 0, :], mix_h[..., 1:, :]
+
+        return branch_input, residuals, dict(beta = beta)
+
+    def forward(self, branch_output, residuals, *, beta):
+        # 'depth' connection
+
+        residuals = einsum(branch_output, beta, 'b ... d, b ... s -> b ... s d') + residuals
+        return rearrange(residuals, 'b ... s d -> (b s) ... d')
 
 # RSM Norm (not to be confused with RMSNorm from transformers)
 # this was proposed by SimBa https://arxiv.org/abs/2410.09754
@@ -143,24 +217,26 @@ class SimBa(Module):
         depth = 3,
         dropout = 0.,
         expansion_factor = 2,
+        num_residual_streams = 4
     ):
         super().__init__()
         """
         following the design of SimBa https://arxiv.org/abs/2410.09754v1
         """
 
+        self.num_residual_streams = num_residual_streams
+
         dim_hidden = default(dim_hidden, dim * expansion_factor)
 
         layers = []
 
-        residual_scales = []
-        layerscales = []
+        residuals = []
 
         self.proj_in = nn.Linear(dim, dim_hidden)
 
         dim_inner = dim_hidden * expansion_factor
 
-        for _ in range(depth):
+        for ind in range(depth):
 
             layer = nn.Sequential(
                 nn.RMSNorm(dim_hidden),
@@ -172,30 +248,35 @@ class SimBa(Module):
 
             layers.append(layer)
 
-            layerscale = nn.Parameter(torch.zeros(dim_hidden))
-            layerscales.append(layerscale)
-
-            residual_scale = nn.Parameter(torch.ones(dim_hidden))
-            residual_scales.append(residual_scale)
+            residual = HyperConnections(dim = dim_hidden, layer_ind = ind, num_residual_streams = num_residual_streams)
+            residuals.append(residual)
 
         # final layer out
 
         self.layers = ModuleList(layers)
-        self.residual_scales = nn.ParameterList(residual_scales)
-        self.layerscales = nn.ParameterList(layerscales)
+        self.residuals = ModuleList(residuals)
 
         self.final_norm = nn.RMSNorm(dim_hidden)
 
     def forward(self, x):
+        x, ps = pack([x], '* d')
 
         x = self.proj_in(x)
 
-        for layer, residual_scale, layerscale in zip(self.layers, self.residual_scales, self.layerscales):
+        x = repeat(x, 'b d -> (b s) d', s = self.num_residual_streams)
 
+        for layer, residual_fn in zip(self.layers, self.residuals):
+
+            x, add_residual = residual_fn.prepare_with_inverse(x)
             branch_out = layer(x)
-            x = x * residual_scale + branch_out * layerscale
+            x = add_residual(branch_out)
 
-        return self.final_norm(x)
+        x = reduce(x, '(b s) d -> b d', 'sum', s = self.num_residual_streams)
+
+        out = self.final_norm(x)
+
+        out, = unpack(out, ps, '* d')
+        return out
 
 # networks
 
