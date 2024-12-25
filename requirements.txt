@@ -3,6 +3,7 @@ box2d-py
 einops>=0.8.0
 ema-pytorch>=0.7.3
 fire
+hyper-connections>=0.0.6
 gymnasium[box2d]>=1.0.0
 moviepy>=1.0.3
 numpy==1.26.4
