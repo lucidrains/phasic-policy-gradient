@@ -67,3 +67,14 @@ $ python train.py --render
     note    = {under review}
 }
 ```
+
+```bibtex
+@article{Yang2020LearningLD,
+    title   = {Learning Low-rank Deep Neural Networks via Singular Vector Orthogonality Regularization and Singular Value Sparsification},
+    author  = {Huanrui Yang and Minxue Tang and Wei Wen and Feng Yan and Daniel Hu and Ang Li and Hai Helen Li and Yiran Chen},
+    journal = {2020 IEEE/CVF Conference on Computer Vision and Pattern Recognition Workshops (CVPRW)},
+    year    = {2020},
+    pages   = {2899-2908},
+    url     = {https://api.semanticscholar.org/CorpusID:213940794}
+}
+```

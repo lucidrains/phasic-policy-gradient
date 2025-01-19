@@ -281,7 +281,6 @@ class Critic(Module):
 # spectral entropy loss
 # https://openreview.net/forum?id=07N9jCfIE4
 
-
 def log(t, eps = 1e-20):
     return t.clamp(min = eps).log()
 
@@ -304,6 +303,32 @@ def model_spectral_entropy_loss(
         spectral_prob = singular_values.softmax(dim = -1)
         spectral_entropy = entropy(spectral_prob)
         loss = loss + spectral_entropy
+
+    return loss
+
+def simba_orthogonal_loss(
+    model: Module
+):
+    loss = tensor(0.).requires_grad_()
+
+    for module in model.modules():
+        if not isinstance(module, SimBa):
+            continue
+
+        weights = []
+
+        for layer in module.layers:
+            linear_in, linear_out = layer.branch[1], layer.branch[3]
+
+            weights.append(linear_in.weight.t())
+            weights.append(linear_out.weight)
+
+        for weight in weights:
+            norm_weight = F.normalize(weight, dim = -1)
+            cosine_dist = einsum(norm_weight, norm_weight, 'i d, j d -> i j')
+            eye = torch.eye(cosine_dist.shape[-1], device = cosine_dist.device, dtype = torch.bool)
+            orthogonal_loss = cosine_dist[~eye].mean()
+            loss = loss + orthogonal_loss
 
     return loss
 
@@ -451,6 +476,8 @@ class PPG:
                 surr2 = ratios.clamp(1 - self.eps_clip, 1 + self.eps_clip) * advantages
                 policy_loss = - torch.min(surr1, surr2) - self.beta_s * entropy
 
+                policy_loss = policy_loss + simba_orthogonal_loss(self.actor)
+
                 if self.spectral_entropy_reg and divisible_by(i, self.apply_spectral_entropy_every):
                     policy_loss = policy_loss + model_spectral_entropy_loss(self.actor) * self.spectral_entropy_reg_weight
 
@@ -459,6 +486,8 @@ class PPG:
                 # calculate value loss and update value network separate from policy network
 
                 value_loss = clipped_value_loss(values, rewards, old_values, self.value_clip)
+
+                value_loss = value_loss + simba_orthogonal_loss(self.critic)
 
                 if self.spectral_entropy_reg and divisible_by(i, self.apply_spectral_entropy_every):
                     value_loss = value_loss + model_spectral_entropy_loss(self.critic) * self.spectral_entropy_reg_weight
