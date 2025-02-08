@@ -2,9 +2,11 @@
 
 *1k steps*
 
-## Phasic Policy Gradient - Pytorch
+## Policy Gradient - Pytorch
 
-An implementation of Phasic Policy Gradient, a proposed improvement on top of Proximal Policy Optimization (PPO), in Pytorch. It will be my very first project in Reinforcement Learning.
+An implementation of Policy Gradient with recent random improvements
+
+The phasic part has been removed, repository to be renamed. I do not think it does anything
 
 ## Install
 
@@ -21,19 +23,19 @@ $ apt install swig
 ## Use
 
 ```bash
-$ python train.py --render
+$ python train.py
 ```
 
 ## Citations
 
 ```bibtex
-@misc{cobbe2020phasic,
-    title   = {Phasic Policy Gradient},
-    author  = {Karl Cobbe and Jacob Hilton and Oleg Klimov and John Schulman},
-    year    = {2020},
-    eprint  = {2009.04416},
-    archivePrefix = {arXiv},
-    primaryClass = {cs.LG}
+@article{Schulman2017ProximalPO,
+    title   = {Proximal Policy Optimization Algorithms},
+    author  = {John Schulman and Filip Wolski and Prafulla Dhariwal and Alec Radford and Oleg Klimov},
+    journal = {ArXiv},
+    year    = {2017},
+    volume  = {abs/1707.06347},
+    url     = {https://api.semanticscholar.org/CorpusID:28695052}
 }
 ```
 
@@ -76,5 +78,16 @@ $ python train.py --render
     year    = {2020},
     pages   = {2899-2908},
     url     = {https://api.semanticscholar.org/CorpusID:213940794}
+}
+```
+
+```bibtex
+@article{Farebrother2024StopRT,
+    title   = {Stop Regressing: Training Value Functions via Classification for Scalable Deep RL},
+    author  = {Jesse Farebrother and Jordi Orbay and Quan Ho Vuong and Adrien Ali Taiga and Yevgen Chebotar and Ted Xiao and Alex Irpan and Sergey Levine and Pablo Samuel Castro and Aleksandra Faust and Aviral Kumar and Rishabh Agarwal},
+    journal = {ArXiv},
+    year   = {2024},
+    volume = {abs/2403.03950},
+    url    = {https://api.semanticscholar.org/CorpusID:268253088}
 }
 ```

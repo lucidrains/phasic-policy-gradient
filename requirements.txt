@@ -1,8 +1,9 @@
-adam-atan2-pytorch>=0.1.18
+lion-pytorch
 box2d-py
 einops>=0.8.0
 ema-pytorch>=0.7.3
 fire
+hl-gauss-pytorch>=0.1.15
 hyper-connections>=0.0.6
 gymnasium[box2d]>=1.0.0
 moviepy>=1.0.3

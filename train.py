@@ -10,7 +10,7 @@ import numpy as np
 from tqdm import tqdm
 
 import torch
-from torch import nn, tensor
+from torch import nn, tensor, cat, stack
 import torch.nn.functional as F
 from torch.nn import Module, ModuleList
 from torch.utils.data import Dataset, DataLoader
@@ -21,6 +21,8 @@ from einops import reduce, repeat, einsum, rearrange
 from ema_pytorch import EMA
 
 from adam_atan2_pytorch.adopt_atan2 import AdoptAtan2
+
+from hl_gauss_pytorch import HLGaussLoss
 
 from hyper_connections import HyperConnections
 
@@ -39,12 +41,6 @@ Memory = namedtuple('Memory', [
     'reward',
     'done',
     'value'
-])
-
-AuxMemory = namedtuple('AuxMemory', [
-    'state',
-    'target_value',
-    'old_values'
 ])
 
 class ExperienceDataset(Dataset):
@@ -256,6 +252,7 @@ class Critic(Module):
         self,
         state_dim,
         hidden_dim,
+        dim_pred = 1,
         mlp_depth = 6, # recent paper has findings that show scaling critic is more important than scaling actor
         dropout = 0.1,
         rsmnorm_input = True
@@ -270,7 +267,7 @@ class Critic(Module):
             dropout = dropout
         )
 
-        self.value_head = nn.Linear(hidden_dim, 1)
+        self.value_head = nn.Linear(hidden_dim, dim_pred)
 
     def forward(self, x):
         x = self.rsmnorm(x)
@@ -334,12 +331,6 @@ def simba_orthogonal_loss(
 
 # agent
 
-def clipped_value_loss(values, rewards, old_values, clip):
-    value_clipped = old_values + (values - old_values).clamp(-clip, clip)
-    value_loss_1 = (value_clipped.flatten() - rewards) ** 2
-    value_loss_2 = (values.flatten() - rewards) ** 2
-    return torch.mean(torch.max(value_loss_1, value_loss_2))
-
 class PPG:
     def __init__(
         self,
@@ -347,8 +338,9 @@ class PPG:
         num_actions,
         actor_hidden_dim,
         critic_hidden_dim,
+        critic_pred_num_bins,
+        reward_range: tuple[float, float],
         epochs,
-        epochs_aux,
         minibatch_size,
         lr,
         betas,
@@ -366,7 +358,17 @@ class PPG:
         save_path = './ppg.pt'
     ):
         self.actor = Actor(state_dim, actor_hidden_dim, num_actions).to(device)
-        self.critic = Critic(state_dim, critic_hidden_dim).to(device)
+
+        self.critic = Critic(state_dim, critic_hidden_dim, dim_pred = critic_pred_num_bins).to(device)
+
+        # https://arxiv.org/abs/2403.03950
+
+        self.critic_hl_gauss_loss = HLGaussLoss(
+            min_value = reward_range[0],
+            max_value = reward_range[1],
+            num_bins = critic_pred_num_bins,
+            clamp_to_range = True
+        ).to(device)
 
         self.ema_actor = EMA(self.actor, beta = ema_decay, include_online_model = False, update_model_with_ema_every = 1000)
         self.ema_critic = EMA(self.critic, beta = ema_decay, include_online_model = False, update_model_with_ema_every = 1000)
@@ -380,7 +382,6 @@ class PPG:
         self.minibatch_size = minibatch_size
 
         self.epochs = epochs
-        self.epochs_aux = epochs_aux
 
         self.lam = lam
         self.gamma = gamma
@@ -409,7 +410,10 @@ class PPG:
         self.actor.load_state_dict(data['actor'])
         self.critic.load_state_dict(data['critic'])
 
-    def learn(self, memories, aux_memories, next_state):
+    def learn(self, memories, next_state):
+
+        hl_gauss = self.critic_hl_gauss_loss
+
         # retrieve and prepare data from memory for training
 
         (
@@ -428,14 +432,18 @@ class PPG:
 
         next_state = torch.from_numpy(next_state).to(device)
         next_value = self.critic(next_state).detach()
-        values = list(values) + [next_value]
+
+        scalar_values = hl_gauss(stack(values))
+        scalar_next_value = hl_gauss(next_value)
+
+        scalar_values = list(scalar_values) + [scalar_next_value]
 
         returns = []
         gae = 0
         for i in reversed(range(len(rewards))):
-            delta = rewards[i] + self.gamma * values[i + 1] * masks[i] - values[i]
+            delta = rewards[i] + self.gamma * scalar_values[i + 1] * masks[i] - scalar_values[i]
             gae = delta + self.gamma * self.lam * masks[i] * gae
-            returns.insert(0, gae + values[i])
+            returns.insert(0, gae + scalar_values[i])
 
         # convert values to torch tensors
 
@@ -443,15 +451,10 @@ class PPG:
 
         states = to_torch_tensor(states)
         actions = to_torch_tensor(actions)
-        old_values = to_torch_tensor(values[:-1])
+        old_values = to_torch_tensor(values)
         old_log_probs = to_torch_tensor(old_log_probs)
 
         rewards = tensor(returns).float().to(device)
-
-        # store state and target values to auxiliary memory buffer for later training
-
-        aux_memory = AuxMemory(states, rewards, old_values)
-        aux_memories.append(aux_memory)
 
         # prepare dataloader for policy phase training
 
@@ -468,10 +471,12 @@ class PPG:
                 action_log_probs = dist.log_prob(actions)
                 entropy = dist.entropy()
 
+                scalar_old_values = hl_gauss(old_values)
+
                 # calculate clipped surrogate objective, classic PPO loss
 
                 ratios = (action_log_probs - old_log_probs).exp()
-                advantages = normalize(rewards - old_values.detach())
+                advantages = normalize(rewards - scalar_old_values.detach())
                 surr1 = ratios * advantages
                 surr2 = ratios.clamp(1 - self.eps_clip, 1 + self.eps_clip) * advantages
                 policy_loss = - torch.min(surr1, surr2) - self.beta_s * entropy
@@ -483,55 +488,24 @@ class PPG:
 
                 update_network_(policy_loss, self.opt_actor)
 
-                # calculate value loss and update value network separate from policy network
+                # calculate clipped value loss and update value network separate from policy network
 
-                value_loss = clipped_value_loss(values, rewards, old_values, self.value_clip)
+                clip = self.value_clip
+
+                scalar_values = hl_gauss(values)
+
+                scalar_value_clipped = scalar_old_values + (scalar_values - scalar_old_values).clamp(-clip, clip)
+                value_clipped_logits = hl_gauss.transform_to_logprobs(scalar_value_clipped)
+
+                value_loss_1 = hl_gauss(value_clipped_logits, rewards, reduction = 'none')
+                value_loss_2 = hl_gauss(values, rewards, reduction = 'none')
+
+                value_loss = torch.mean(torch.max(value_loss_1, value_loss_2))
 
                 value_loss = value_loss + simba_orthogonal_loss(self.critic)
 
                 if self.spectral_entropy_reg and divisible_by(i, self.apply_spectral_entropy_every):
                     value_loss = value_loss + model_spectral_entropy_loss(self.critic) * self.spectral_entropy_reg_weight
-
-                update_network_(value_loss, self.opt_critic)
-
-    def learn_aux(self, aux_memories):
-        # gather states and target values into one tensor
-
-        states, rewards, old_values = zip(*aux_memories)
-
-        states = torch.cat(states)
-        rewards = torch.cat(rewards)
-        old_values = torch.cat(old_values)
-
-        # get old action predictions for minimizing kl divergence and clipping respectively
-
-        old_action_probs, _ = self.actor(states)
-        old_action_probs.detach_()
-
-        # prepared dataloader for auxiliary phase training
-
-        dl = create_shuffled_dataloader([states, old_action_probs, rewards, old_values], self.minibatch_size)
-
-        # the proposed auxiliary phase training
-        # where the value is distilled into the policy network, while making sure the policy network does not change the action predictions (kl div loss)
-
-        for epoch in range(self.epochs_aux):
-            for states, old_action_probs, rewards, old_values in tqdm(dl, desc=f'auxiliary epoch {epoch}'):
-                action_probs, policy_values = self.actor(states)
-                action_logprobs = action_probs.log()
-
-                # policy network loss copmoses of both the kl div loss as well as the auxiliary loss
-
-                aux_loss = clipped_value_loss(policy_values, rewards, old_values, self.value_clip)
-                loss_kl = F.kl_div(action_logprobs, old_action_probs, reduction='batchmean')
-                policy_loss = aux_loss + loss_kl
-
-                update_network_(policy_loss, self.opt_actor)
-
-                # paper says it is important to train the value network extra during the auxiliary phase
-
-                values = self.critic(states)
-                value_loss = clipped_value_loss(values, rewards, old_values, self.value_clip)
 
                 update_network_(value_loss, self.opt_critic)
 
@@ -543,6 +517,8 @@ def main(
     max_timesteps = 500,
     actor_hidden_dim = 64,
     critic_hidden_dim = 256,
+    critic_pred_num_bins = 100,
+    reward_range = (-100, 100),
     minibatch_size = 64,
     lr = 0.0008,
     betas = (0.9, 0.99),
@@ -558,14 +534,12 @@ def main(
     cautious_factor = 0.1,
     ema_decay = 0.9,
     update_timesteps = 5000,
-    num_policy_updates_per_aux = 500,
     epochs = 2,
-    epochs_aux = 4,
     seed = None,
-    render = False,
+    render = True,
     render_every_eps = 250,
     save_every = 1000,
-    clear_videos = False,
+    clear_videos = True,
     video_folder = './lunar-recording',
     load = False
 ):
@@ -587,15 +561,15 @@ def main(
     num_actions = env.action_space.n
 
     memories = deque([])
-    aux_memories = deque([])
 
     agent = PPG(
         state_dim,
         num_actions,
         actor_hidden_dim,
         critic_hidden_dim,
+        critic_pred_num_bins,
+        reward_range,
         epochs,
-        epochs_aux,
         minibatch_size,
         lr,
         betas,
@@ -648,13 +622,9 @@ def main(
             state = next_state
 
             if divisible_by(time, update_timesteps):
-                agent.learn(memories, aux_memories, next_state)
+                agent.learn(memories, next_state)
                 num_policy_updates += 1
                 memories.clear()
-
-                if divisible_by(num_policy_updates, num_policy_updates_per_aux):
-                    agent.learn_aux(aux_memories)
-                    aux_memories.clear()
 
             if done:
                 break
