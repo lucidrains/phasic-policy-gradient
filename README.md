@@ -2,9 +2,9 @@
 
 *1k steps*
 
-## Policy Gradient - Pytorch
+## PPO
 
-An implementation of Policy Gradient with recent random improvements
+An implementation of PPO with recent random improvements
 
 The phasic part has been removed, repository to be renamed. I do not think it does anything
 
